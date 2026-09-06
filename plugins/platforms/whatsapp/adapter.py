@@ -719,6 +719,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
                                 asyncio.create_task(self._send_read_receipt(msg_data))
+                                event = self._apply_whatsapp_group_observe_attribution(event, msg_data)
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
                                 else:
@@ -812,10 +813,32 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Failed to read document text: {e}", flush=True)
         return body
 
+    async def _observe_bridge_group_message(self, data: Dict[str, Any]) -> None:
+        """Observe one skipped group message: transcript-only, media cached to disk so the
+        model can inspect it on demand at trigger time (no agent/API calls at observe time)."""
+        msg_type = self._classify_bridge_message(data)
+        body = str(data.get("body") or "").strip()
+        try:
+            cached_urls, _media_types = await self._collect_bridge_media(data, msg_type)
+        except Exception as e:
+            print(f"[{self.name}] Observe media download failed: {e}", flush=True)
+            cached_urls = []
+        refs = self._whatsapp_observe_media_references(cached_urls, msg_type)
+        if refs:
+            ref_block = "\n".join(refs)
+            body = f"{body}\n{ref_block}" if body else ref_block
+        self._observe_unmentioned_group_message(data, msg_type, body)
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Build a MessageEvent from bridge message data, downloading images to cache."""
+        """Build a MessageEvent from bridge message data, downloading images to cache.
+
+        Group messages the mention gate skips are stored as observed context (no
+        dispatch) when ``observe_unmentioned_group_messages`` is on — see
+        ``_should_observe_unmentioned_group_message``."""
         try:
             if not self._should_process_message(data):
+                if self._should_observe_unmentioned_group_message(data):
+                    await self._observe_bridge_group_message(data)
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
