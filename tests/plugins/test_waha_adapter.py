@@ -219,7 +219,8 @@ class TestOutbound:
 
         async def _fake_request(method, path, payload=None, timeout=30):
             captured.append((method, path, payload))
-            return 200, {"id": "wamid.out1"}
+            return 200, {"key": {"remoteJid": "6281234567890@s.whatsapp.net",
+                                 "fromMe": True, "id": f"wamid.out{len(captured)}"}}
 
         adapter._request = _fake_request
         return adapter, captured
@@ -248,8 +249,27 @@ class TestOutbound:
         assert result.success
         method, path, payload = captured[0]
         assert method == "PUT"
-        assert path == "/api/test-session/chats/6281234567890@c.us/messages/wamid.in1"
+        # bare ids are serialized as own-message edits (WAHA rejects bare ids, HTTP 500)
+        assert path == ("/api/test-session/chats/6281234567890@c.us/messages/"
+                        "true_6281234567890@c.us_wamid.in1")
         assert payload["text"] == "𝑬𝒅𝒊𝒕𝒆𝒅"  # "## Edited" → script-bold H2
+
+    def test_send_returns_serialized_message_id(self):
+        """sendText ids come from body.key (NOWEB shape) serialized Baileys-style so the
+        stream consumer can edit instead of falling back to fresh sends."""
+        adapter, captured = self._capture_adapter()
+        result = asyncio.run(adapter.send("6281234567890@c.us", "hello"))
+        assert result.success
+        assert result.message_id == "true_6281234567890@s.whatsapp.net_wamid.out1"
+
+    def test_edit_accepts_serialized_id_unchanged(self):
+        adapter, captured = self._capture_adapter()
+        result = asyncio.run(adapter.edit_message(
+            "6281234567890@c.us", "true_6281234567890@s.whatsapp.net_wamid.out1", "edited"))
+        assert result.success
+        method, path, _ = captured[0]
+        assert path == ("/api/test-session/chats/6281234567890@c.us/messages/"
+                        "true_6281234567890@s.whatsapp.net_wamid.out1")
 
     def test_media_local_file_sent_as_base64(self, tmp_path):
         adapter, captured = self._capture_adapter()

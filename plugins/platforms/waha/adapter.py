@@ -336,6 +336,25 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._observe_unmentioned_group_message(data, msg_type, body)
 
     # ------------------------------------------------------------------ outbound
+    @staticmethod
+    def _serialized_message_id(body: Any, chat_id: str) -> str:
+        """Baileys serialized id (``<fromMe>_<chatJid>_<id>``) from a WAHA send response.
+
+        NOWEB sendText returns ``{"key": {"remoteJid", "fromMe", "id"}}`` with no
+        top-level ``id``; WAHA's edit endpoint rejects bare ids (HTTP 500 "Message id be
+        in format false_...@c.us_..."), so edits need the serialized form. ``remoteJid``
+        (``@s.whatsapp.net`` for DMs) is the Baileys store key and is preferred over the
+        ``@c.us`` chat id when present."""
+        key = (body or {}).get("key") if isinstance(body, dict) else None
+        mid = str((key or {}).get("id") or "") if isinstance(body, dict) else ""
+        if not mid:
+            return ""
+        if "_" in mid:
+            return mid  # already serialized (defensive)
+        remote = str((key or {}).get("remoteJid") or chat_id)
+        from_me = bool((key or {}).get("fromMe", True))
+        return f"{'true' if from_me else 'false'}_{remote}_{mid}"
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> Any:
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
@@ -353,7 +372,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 status, body = await self._request("POST", "/api/sendText", payload, timeout=30)
                 if status not in (200, 201):
                     return SendResult(success=False, error=f"WAHA sendText HTTP {status}: {body}")
-                last_id = str((body or {}).get("id") or "") or None
+                last_id = self._serialized_message_id(body, chat_id) or None
                 if last_id:
                     sent_ids.append(last_id)
                 if len(chunks) > 1:
@@ -367,8 +386,11 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> Any:
         """Edit via WAHA's chat-message endpoint (NOWEB/WEBJS/GOWS all support it)."""
         chat_id = to_whatsapp_jid(chat_id)
+        mid = str(message_id or "")
+        if "_" not in mid:
+            mid = f"true_{chat_id}_{mid}"  # bare id → serialize as own message
         try:
-            path = f"/api/{self._session}/chats/{chat_id}/messages/{message_id}"
+            path = f"/api/{self._session}/chats/{chat_id}/messages/{mid}"
             status, body = await self._request(
                 "PUT", path, {"text": self.format_message(content)}, timeout=30)
             if status not in (200, 201):
@@ -518,7 +540,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 async with http.post(f"{base_url}{path}", json=payload,
                                      timeout=aiohttp.ClientTimeout(total=total)) as resp:
                     if resp.status in (200, 201):
-                        return (await resp.json(content_type=None) or {}).get("id"), None
+                        body = await resp.json(content_type=None) or {}
+                        key = body.get("key") if isinstance(body, dict) else None
+                        return (str((key or {}).get("id") or body.get("id") or "") or None), None
                     return None, {"error": f"WAHA {path} HTTP {resp.status}: {await resp.text()}"}
             if text.strip() and not media_caption:
                 last_id, err = await _post("/api/sendText",
