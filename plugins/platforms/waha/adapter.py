@@ -235,11 +235,32 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             await self._message_handler(event_obj)
         return web.Response(status=200)
 
+    @staticmethod
+    def _lid_alt_jid(payload: Dict[str, Any]) -> str:
+        """Phone JID for a LID-addressed message (``addressingMode: "lid"``).
+
+        WhatsApp increasingly delivers DMs keyed by a privacy LID (``<n>@lid``);
+        NOWEB exposes the phone form alongside it as ``_data.key.remoteJidAlt``
+        (``<n>@s.whatsapp.net``). Allowlists hold phone JIDs, so prefer the alt
+        whenever the primary id is a LID."""
+        data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
+        key = data.get("key") if isinstance(data.get("key"), dict) else {}
+        alt = str(key.get("remoteJidAlt") or "")
+        primary = str(key.get("remoteJid") or payload.get("from") or "")
+        if alt and primary.endswith("@lid"):
+            return alt
+        return ""
+
     def _map_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """WAHA webhook payload → the bridge-shaped dict the shared mixin gates on."""
         chat_id = str(payload.get("chatId") or payload.get("from") or "")
+        alt_jid = self._lid_alt_jid(payload)
+        if chat_id.endswith("@lid") and alt_jid:
+            chat_id = alt_jid
         is_group = chat_id.endswith("@g.us")
         sender_id = str(payload.get("participant") or payload.get("from") or "")
+        if sender_id.endswith("@lid") and alt_jid:
+            sender_id = alt_jid
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
         media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
         reply_to = payload.get("replyTo") if isinstance(payload.get("replyTo"), dict) else {}

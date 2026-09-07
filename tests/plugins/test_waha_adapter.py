@@ -94,6 +94,32 @@ class TestPayloadMapping:
         assert data["body"] == "hello there"
         assert data["botIds"] == ["15551230000@s.whatsapp.net"]
 
+    def test_lid_addressing_resolved_to_phone_jid(self):
+        """WhatsApp LID-addressed DMs (addressingMode: lid) must surface the phone JID
+        from _data.key.remoteJidAlt, or phone-form allowlists silently reject them."""
+        adapter = _make_adapter()
+        payload = _dm_payload(
+            id="false_231580811403454@lid_ABC",
+            **{"_data": {"key": {"remoteJid": "231580811403454@lid",
+                                 "remoteJidAlt": "6281234567890@s.whatsapp.net",
+                                 "fromMe": False, "id": "ABC", "participant": "",
+                                 "addressingMode": "lid"}}},
+        )
+        payload["from"] = "231580811403454@lid"
+        payload["chatId"] = "231580811403454@lid"
+        payload["participant"] = "231580811403454@lid"
+        data = adapter._map_payload(payload)
+        assert data["chatId"] == "6281234567890@s.whatsapp.net"
+        assert data["senderId"] == "6281234567890@s.whatsapp.net"
+
+    def test_lid_without_alt_kept_as_is(self):
+        adapter = _make_adapter()
+        payload = _dm_payload()
+        payload["from"] = "231580811403454@lid"
+        payload["chatId"] = "231580811403454@lid"
+        data = adapter._map_payload(payload)
+        assert data["chatId"] == "231580811403454@lid"
+
     def test_group_mapping_uses_participant_as_sender(self):
         adapter = _make_adapter()
         data = adapter._map_payload(_group_payload())
