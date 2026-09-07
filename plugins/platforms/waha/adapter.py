@@ -608,6 +608,7 @@ def register(ctx) -> None:
         max_message_length=65536,
         emoji="💬",
         platform_hint=(
-            "You are chatting via WhatsApp (WAHA transport). Responses are rendered "
-            "with WhatsApp formatting: *bold*, _italic_, ~strikethrough~, monospace "
-            "backticks. Keep replies concise and mobile-friendly."))
+            "You are chatting via WhatsApp. Write standard markdown freely "
+            "(**bold**, *italic*, headings, lists, code fences) — the gateway "
+            "converts it to WhatsApp formatting automatically. No tables; prefer "
+            "bullets or labeled lines. Keep replies concise and mobile-friendly."))
