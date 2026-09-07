@@ -49,6 +49,7 @@ def _make_adapter(**extra_overrides):
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._send_read_receipts = False
     adapter._bot_ids = {"15551230000@s.whatsapp.net"}
+    adapter._lid_pn_cache = {}
     adapter._http_session = MagicMock()
     adapter._running = True
     adapter._message_handler = AsyncMock()
@@ -109,8 +110,8 @@ class TestPayloadMapping:
         payload["chatId"] = "231580811403454@lid"
         payload["participant"] = "231580811403454@lid"
         data = adapter._map_payload(payload)
-        assert data["chatId"] == "6281234567890@s.whatsapp.net"
-        assert data["senderId"] == "6281234567890@s.whatsapp.net"
+        assert data["chatId"] == "6281234567890@c.us"
+        assert data["senderId"] == "6281234567890@c.us"
 
     def test_lid_without_alt_kept_as_is(self):
         adapter = _make_adapter()
@@ -131,7 +132,7 @@ class TestPayloadMapping:
                                     "participantAlt": "6281234567890@s.whatsapp.net",
                                     "addressingMode": "lid"}}
         data = adapter._map_payload(payload)
-        assert data["senderId"] == "6281234567890@s.whatsapp.net"
+        assert data["senderId"] == "6281234567890@c.us"
 
     def test_webhook_me_lid_added_to_bot_ids(self):
         """LID-addressed groups mention/quote the bot by its LID; botIds must hold both
@@ -314,6 +315,39 @@ class TestOutbound:
         result = asyncio.run(adapter.send("6281234567890@c.us", "hello"))
         assert result.success
         assert result.message_id == "true_6281234567890@s.whatsapp.net_wamid.out1"
+
+    def test_outbound_chat_id_uses_cus_form(self):
+        """WAHA docs: internal @s.whatsapp.net JIDs must be converted to @c.us when used
+        as a chatId; @lid targets pass through; groups unchanged."""
+        adapter, captured = self._capture_adapter()
+        asyncio.run(adapter.send("6281234567890", "a"))  # bare phone
+        assert captured[0][2]["chatId"] == "6281234567890@c.us"
+        asyncio.run(adapter.send("6281234567890@s.whatsapp.net", "b"))
+        assert captured[1][2]["chatId"] == "6281234567890@c.us"
+        asyncio.run(adapter.send("231580811403454@lid", "c"))
+        assert captured[2][2]["chatId"] == "231580811403454@lid"
+        asyncio.run(adapter.send("120363001234567890@g.us", "d"))
+        assert captured[3][2]["chatId"] == "120363001234567890@g.us"
+
+    def test_lid_cache_resolves_dm_without_alt(self):
+        """A LID DM whose alt is absent resolves via a learned pair; canonical @c.us."""
+        """A LID DM whose alt field is absent resolves via a previously learned pair."""
+        adapter = _make_adapter()
+        with_alt = _dm_payload()
+        with_alt["from"] = with_alt["chatId"] = "231580811403454@lid"
+        with_alt["_data"] = {"key": {"remoteJid": "231580811403454@lid",
+                                     "remoteJidAlt": "6281234567890@s.whatsapp.net",
+                                     "fromMe": False, "id": "A", "participant": "",
+                                     "addressingMode": "lid"}}
+        data = adapter._map_payload(with_alt)
+        assert data["chatId"] == "6281234567890@c.us"
+        without_alt = _dm_payload()
+        without_alt["from"] = without_alt["chatId"] = "231580811403454@lid"
+        without_alt["_data"] = {"key": {"remoteJid": "231580811403454@lid",
+                                        "fromMe": False, "id": "B", "participant": "",
+                                        "addressingMode": "lid"}}
+        data = adapter._map_payload(without_alt)
+        assert data["chatId"] == "6281234567890@c.us"
 
     def test_edit_accepts_serialized_id_unchanged(self):
         adapter, captured = self._capture_adapter()

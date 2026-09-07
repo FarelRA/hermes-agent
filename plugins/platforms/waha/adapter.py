@@ -29,6 +29,21 @@ from gateway.whatsapp_identity import to_whatsapp_jid
 
 logger = logging.getLogger(__name__)
 
+
+def _waha_chat_id(chat_id: str) -> str:
+    """Outbound chatId in the form WAHA/NOWEB documents (see waha.devlike.pro chat-ids).
+
+    ``gateway.whatsapp_identity.to_whatsapp_jid`` renders bare phones as
+    ``<digits>@s.whatsapp.net`` (Baileys-bridge form); the WAHA docs are explicit that
+    internal ``@s.whatsapp.net`` JIDs must be converted to ``@c.us`` when used as a
+    ``chatId``. ``@lid`` targets are passed through unchanged (WAHA accepts them and
+    routes by the hidden id); groups/broadcasts/newsletters are returned as-is."""
+    jid = to_whatsapp_jid(chat_id)
+    if jid.endswith("@s.whatsapp.net"):
+        jid = jid.split("@", 1)[0] + "@c.us"
+    return jid
+
+
 AIOHTTP_AVAILABLE = True
 try:
     import aiohttp
@@ -110,6 +125,10 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in _TRUTHY
         self._bot_ids: set[str] = set()
+        # Learned LID→phone-JID pairs (@c.us form) from observed alt fields; consulted
+        # when a LID arrives without its alt (WAHA's Lids API needs the NOWEB store,
+        # which is off in minimal deployments — see waha.devlike.pro contacts/lids).
+        self._lid_pn_cache: dict[str, str] = {}
         self._http_session: Optional["aiohttp.ClientSession"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._health_task: Optional[asyncio.Task] = None
@@ -237,44 +256,58 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             await self._message_handler(event_obj)
         return web.Response(status=200)
 
-    @staticmethod
-    @staticmethod
-    def _lid_alt_jid(payload: Dict[str, Any]) -> str:
+    def _lid_alt_jid(self, payload: Dict[str, Any]) -> str:
         """Phone JID for a LID-addressed message (``addressingMode: "lid"``).
 
         WhatsApp increasingly delivers DMs keyed by a privacy LID (``<n>@lid``);
         NOWEB exposes the phone form alongside it as ``_data.key.remoteJidAlt``
         (``<n>@s.whatsapp.net``). Allowlists hold phone JIDs, so prefer the alt
-        whenever the primary id is a LID."""
+        whenever the primary id is a LID. Every resolved pair is remembered in
+        ``_lid_pn_cache`` for LIDs that later arrive without an alt field."""
         data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
         key = data.get("key") if isinstance(data.get("key"), dict) else {}
         alt = str(key.get("remoteJidAlt") or "")
         primary = str(key.get("remoteJid") or payload.get("from") or "")
         if alt and primary.endswith("@lid"):
-            return alt
+            # Canonical phone form is @c.us (docs: don't use @s.whatsapp.net as chatId)
+            alt_cus = alt.split("@", 1)[0] + "@c.us"
+            self._lid_pn_cache[primary] = alt_cus
+            return alt_cus
         return ""
 
     @staticmethod
     def _participant_alt_jid(payload: Dict[str, Any]) -> str:
-        """Phone JID for a LID-addressed group sender (``key.participantAlt``)."""
+        """Phone JID (@c.us) for a LID-addressed group sender (``key.participantAlt``)."""
         data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
         key = data.get("key") if isinstance(data.get("key"), dict) else {}
         alt = str(key.get("participantAlt") or "")
         participant = str(key.get("participant") or payload.get("participant") or "")
         if alt and participant.endswith("@lid"):
-            return alt
+            return alt.split("@", 1)[0] + "@c.us"
         return ""
+
+    def _resolve_lid(self, lid: str) -> str:
+        """Best-effort phone JID for a bare LID: learned cache first, else the LID
+        unchanged (WAHA accepts ``@lid`` chatIds; the Lids API needs the NOWEB store)."""
+        if not lid.endswith("@lid"):
+            return lid
+        return self._lid_pn_cache.get(lid, lid)
 
     def _map_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """WAHA webhook payload → the bridge-shaped dict the shared mixin gates on."""
         chat_id = str(payload.get("chatId") or payload.get("from") or "")
         alt_jid = self._lid_alt_jid(payload)
-        if chat_id.endswith("@lid") and alt_jid:
-            chat_id = alt_jid
+        if chat_id.endswith("@lid"):
+            chat_id = alt_jid or self._resolve_lid(chat_id)
         is_group = chat_id.endswith("@g.us")
         sender_id = str(payload.get("participant") or payload.get("from") or "")
         if sender_id.endswith("@lid"):
-            sender_id = self._participant_alt_jid(payload) or alt_jid or sender_id
+            participant_alt = self._participant_alt_jid(payload)
+            if participant_alt:
+                self._lid_pn_cache[sender_id] = participant_alt.split("@", 1)[0] + "@c.us"
+                sender_id = participant_alt
+            else:
+                sender_id = alt_jid or self._resolve_lid(sender_id)
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
         media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
         reply_to = payload.get("replyTo") if isinstance(payload.get("replyTo"), dict) else {}
@@ -398,7 +431,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        chat_id = to_whatsapp_jid(chat_id)
+        chat_id = _waha_chat_id(chat_id)
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
             sent_ids: list[str] = []
@@ -423,7 +456,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> Any:
         """Edit via WAHA's chat-message endpoint (NOWEB/WEBJS/GOWS all support it)."""
-        chat_id = to_whatsapp_jid(chat_id)
+        chat_id = _waha_chat_id(chat_id)
         mid = str(message_id or "")
         if "_" not in mid:
             mid = f"true_{chat_id}_{mid}"  # bare id → serialize as own message
@@ -440,21 +473,21 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         try:
             await self._request("POST", "/api/startTyping",
-                                {"session": self._session, "chatId": to_whatsapp_jid(chat_id)}, timeout=10)
+                                {"session": self._session, "chatId": _waha_chat_id(chat_id)}, timeout=10)
         except Exception:
             logger.debug("[waha] startTyping failed", exc_info=True)
 
     async def _stop_typing(self, chat_id: str) -> None:
         try:
             await self._request("POST", "/api/stopTyping",
-                                {"session": self._session, "chatId": to_whatsapp_jid(chat_id)}, timeout=10)
+                                {"session": self._session, "chatId": _waha_chat_id(chat_id)}, timeout=10)
         except Exception:
             logger.debug("[waha] stopTyping failed", exc_info=True)
 
     async def _send_media(self, chat_id: str, path_or_url: str, kind: str,
                           caption: Optional[str] = None, file_name: Optional[str] = None) -> Any:
         from gateway.platforms.base import SendResult
-        chat_id = to_whatsapp_jid(chat_id)
+        chat_id = _waha_chat_id(chat_id)
         endpoint = {"image": "sendImage", "video": "sendVideo", "voice": "sendVoice",
                     "audio": "sendAudio", "document": "sendFile"}.get(kind, "sendFile")
         payload: Dict[str, Any] = {"session": self._session, "chatId": chat_id}
@@ -502,7 +535,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return
         try:
             await self._request("POST", "/api/sendSeen",
-                                {"session": self._session, "chatId": to_whatsapp_jid(chat_id),
+                                {"session": self._session, "chatId": _waha_chat_id(chat_id),
                                  "messageId": message_id}, timeout=10)
         except Exception:
             logger.debug("[waha] sendSeen failed", exc_info=True)
@@ -563,7 +596,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["X-Api-Key"] = api_key
-        chat_id = to_whatsapp_jid(chat_id)
+        chat_id = _waha_chat_id(chat_id)
         media = media_files or []
         media_caption = caption if (caption and len(media) == 1) else None
         text = message or ""
