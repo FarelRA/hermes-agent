@@ -159,8 +159,8 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._http_session = None
             return False
         me = (body or {}).get("me") or {}
-        if isinstance(me, dict) and me.get("id"):
-            self._bot_ids = {str(me["id"])}
+        if isinstance(me, dict) and (me.get("id") or me.get("lid")):
+            self._bot_ids = {str(v) for v in (me.get("id"), me.get("lid")) if v}
         self._running = True
         await self._start_webhook_receiver()
         self._wire_plugin_handlers()
@@ -222,8 +222,10 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not isinstance(payload, dict):
             return web.Response(status=200)
         me = body.get("me") or {}
-        if isinstance(me, dict) and me.get("id"):
-            self._bot_ids = {str(me["id"])}
+        if isinstance(me, dict) and (me.get("id") or me.get("lid")):
+            # Both forms: lid-addressed groups quote/mention the bot by LID while
+            # me.id is the phone JID — the reply/mention gates must match either.
+            self._bot_ids = {str(v) for v in (me.get("id"), me.get("lid")) if v}
         if payload.get("fromMe"):
             return web.Response(status=200)  # bot mode: own messages are echoes
         try:
@@ -235,6 +237,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             await self._message_handler(event_obj)
         return web.Response(status=200)
 
+    @staticmethod
     @staticmethod
     def _lid_alt_jid(payload: Dict[str, Any]) -> str:
         """Phone JID for a LID-addressed message (``addressingMode: "lid"``).
@@ -251,6 +254,17 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return alt
         return ""
 
+    @staticmethod
+    def _participant_alt_jid(payload: Dict[str, Any]) -> str:
+        """Phone JID for a LID-addressed group sender (``key.participantAlt``)."""
+        data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
+        key = data.get("key") if isinstance(data.get("key"), dict) else {}
+        alt = str(key.get("participantAlt") or "")
+        participant = str(key.get("participant") or payload.get("participant") or "")
+        if alt and participant.endswith("@lid"):
+            return alt
+        return ""
+
     def _map_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """WAHA webhook payload → the bridge-shaped dict the shared mixin gates on."""
         chat_id = str(payload.get("chatId") or payload.get("from") or "")
@@ -259,8 +273,8 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chat_id = alt_jid
         is_group = chat_id.endswith("@g.us")
         sender_id = str(payload.get("participant") or payload.get("from") or "")
-        if sender_id.endswith("@lid") and alt_jid:
-            sender_id = alt_jid
+        if sender_id.endswith("@lid"):
+            sender_id = self._participant_alt_jid(payload) or alt_jid or sender_id
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
         media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
         reply_to = payload.get("replyTo") if isinstance(payload.get("replyTo"), dict) else {}
@@ -292,6 +306,9 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not self._should_process_message(data):
             if self._should_observe_unmentioned_group_message(data):
                 await self._observe_bridge_group_message(data)
+            else:
+                logger.debug("[waha] gate rejected chat=%s sender=%s body=%.60r",
+                             data.get("chatId"), data.get("senderId"), data.get("body"))
             return None
         msg_type = self._classify_waha_message(data)
         source = self.build_source(

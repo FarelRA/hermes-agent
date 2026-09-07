@@ -120,6 +120,33 @@ class TestPayloadMapping:
         data = adapter._map_payload(payload)
         assert data["chatId"] == "231580811403454@lid"
 
+    def test_group_participant_alt_resolved_to_phone(self):
+        """LID-addressed groups deliver the sender as key.participant (@lid) with the
+        phone JID alongside as participantAlt — senderId must surface the phone form."""
+        adapter = _make_adapter()
+        payload = _group_payload()
+        payload["participant"] = "231580811403454@lid"
+        payload["_data"] = {"key": {"remoteJid": payload["chatId"], "fromMe": False,
+                                    "id": "X", "participant": "231580811403454@lid",
+                                    "participantAlt": "6281234567890@s.whatsapp.net",
+                                    "addressingMode": "lid"}}
+        data = adapter._map_payload(payload)
+        assert data["senderId"] == "6281234567890@s.whatsapp.net"
+
+    def test_webhook_me_lid_added_to_bot_ids(self):
+        """LID-addressed groups mention/quote the bot by its LID; botIds must hold both
+        forms so reply/mention gates match either."""
+        adapter = _make_adapter(webhook_secret="")
+        me = {"id": "6289682642242@c.us", "lid": "237512412930265@lid"}
+
+        async def _json():
+            return {"event": "message", "me": me, "payload": _group_payload()}
+        request = MagicMock()
+        request.json = AsyncMock(side_effect=_json)
+        request.headers = {}
+        asyncio.run(adapter._handle_webhook(request))
+        assert adapter._bot_ids == {"6289682642242@c.us", "237512412930265@lid"}
+
     def test_group_mapping_uses_participant_as_sender(self):
         adapter = _make_adapter()
         data = adapter._map_payload(_group_payload())
