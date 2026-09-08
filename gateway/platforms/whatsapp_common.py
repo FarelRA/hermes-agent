@@ -157,6 +157,24 @@ class WhatsAppBehaviorMixin:
             normalized = normalized.replace(":", "@", 1)
         return normalized
 
+    def _own_country_code(self) -> str:
+        """The session's own country calling code (from the bot's phone JID), for
+        local-format phone input on ``/access``; ``""`` when unknown."""
+        from gateway.whatsapp_identity import default_country_code
+        for bot_id in self._bot_ids_from_message({"botIds": sorted(getattr(self, "_bot_ids", None) or [])}):
+            cc = default_country_code(bot_id)
+            if cc:
+                return cc
+        return ""
+
+    def _access_phone_jid(self, ref: str) -> str:
+        """``<e164>@c.us`` for a human-supplied phone in any local/international format,
+        normalized against the session's own country; ``""`` when not a plausible phone
+        (the caller replies with usage help instead of storing a guess)."""
+        from gateway.whatsapp_identity import normalize_phone_e164
+        e164 = normalize_phone_e164(ref, self._own_country_code())
+        return f"{e164}@c.us" if e164 else ""
+
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
         """Status updates (Stories) and Channel/Newsletter broadcasts — never reply

@@ -104,6 +104,13 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # WAHA/WhatsApp render the same dialect; the mixin's formatter applies as-is.
     FALLBACK_ON_FINAL_EDIT_FLOOD = True
 
+    # /access env carriers (gateway/slash_commands_access.py): config-seeded lists are the
+    # authority here, but operators may run env-only, so the command keeps both in sync.
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("WAHA_ALLOWED_USERS",),
+        "group": ("WAHA_GROUP_ALLOW_FROM",),
+    }
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("waha"))
         extra = config.extra
@@ -297,6 +304,104 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return lid
         return self._lid_pn_cache.get(lid, lid)
 
+    # ------------------------------------------------------------------ /access resolution
+
+    async def resolve_access_ref(self, ref: str, *, scope: str, event=None) -> Optional["AccessResolution"]:
+        """Turn a human-supplied reference into a WhatsApp id (gateway/slash_commands_access.py
+        contract).  Phone normalization lives in the shared mixin (generic fallback handles
+        it); this resolver adds the parts that need the WAHA API: @PushName via participants,
+        mentions, and group-name → JID lookup (exact → case-insensitive → unique substring).
+        ``None`` when clearly not WhatsApp-shaped (lets the generic fallback try);
+        ambiguity returns ``candidates`` instead of a guess."""
+        text = str(ref or "").strip()
+        if not text:
+            return None
+        if scope == "group":
+            return await self._resolve_access_group(text)
+        return await self._resolve_access_user(text, event)
+
+    async def _resolve_access_group(self, text: str) -> "AccessResolution":
+        from gateway.slash_commands_access import AccessResolution
+
+        if "@" in text:  # already a JID
+            return AccessResolution(canonical=text)
+        try:
+            status, body = await self._request("GET", f"/api/{self._session}/groups", timeout=15)
+        except Exception:
+            logger.debug("[waha] /access group lookup failed", exc_info=True)
+            return AccessResolution(canonical=text)
+        groups = body if isinstance(body, dict) else {}
+        if status != 200 or not groups:
+            return AccessResolution(canonical=text)
+        entries = [(gid, str(g.get("subject") or "")) for gid, g in groups.items() if isinstance(g, dict)]
+        exact = [(gid, subj) for gid, subj in entries if subj == text]
+        if len(exact) == 1:
+            gid, subj = exact[0]
+            return AccessResolution(canonical=gid, label=subj)
+        lowered = text.lower()
+        case_insensitive = [(gid, subj) for gid, subj in entries if subj.lower() == lowered]
+        if len(case_insensitive) == 1:
+            gid, subj = case_insensitive[0]
+            return AccessResolution(canonical=gid, label=subj)
+        substring = [(gid, subj) for gid, subj in entries if lowered in subj.lower()]
+        if len(substring) == 1:
+            gid, subj = substring[0]
+            return AccessResolution(canonical=gid, label=subj)
+        if len(substring) > 1:
+            return AccessResolution(candidates=tuple(substring[:8]))
+        return AccessResolution(canonical=text)
+
+    async def _resolve_access_user(self, text: str, event) -> "AccessResolution":
+        from gateway.slash_commands_access import AccessResolution
+
+        if text.startswith("@"):
+            # PushName lookup: the triggering chat's participants (authoritative roster
+            # for "who is in this conversation"); falls back to any known group.
+            needle = text[1:].lower()
+            chat_id = event.source.chat_id if event is not None and event.source else ""
+            for jid, pushname in await self._access_contacts(chat_id):
+                if (pushname or "").lower() == needle:
+                    return AccessResolution(canonical=jid, label=pushname)
+            matches = [(jid, pn) for jid, pn in await self._access_contacts("") if (pn or "").lower() == needle]
+            if len(matches) == 1:
+                jid, pn = matches[0]
+                return AccessResolution(canonical=jid, label=pn)
+            if len(matches) > 1:
+                return AccessResolution(candidates=tuple(matches[:8]))
+            return AccessResolution()
+        if "@" in text:
+            return AccessResolution(canonical=self._resolve_lid(text) if text.endswith("@lid") else text)
+        return None  # not WhatsApp-shaped at all; generic fallback normalizes phones
+
+    async def _access_contacts(self, chat_id: str) -> list:
+        """``[(jid@c.us, pushname), …]`` for *chat_id*'s participants (or across the
+        session's groups when ``chat_id`` is empty).  Tolerates WAHA engines that omit
+        names — those entries resolve by JID only."""
+        contacts: list = []
+        if chat_id and chat_id.endswith("@g.us"):
+            try:
+                status, body = await self._request(
+                    "GET", f"/api/{self._session}/groups/{chat_id}/participants", timeout=15)
+                participants = body if status == 200 and isinstance(body, list) else []
+            except Exception:
+                participants = []
+            for p in participants:
+                if not isinstance(p, dict):
+                    continue
+                jid = str(p.get("phoneNumber") or p.get("id") or "")
+                jid = jid.split("@", 1)[0] + "@c.us" if "@" in jid else jid
+                if jid:
+                    contacts.append((jid, str(p.get("name") or p.get("pushName") or "")))
+            return contacts
+        try:
+            status, body = await self._request("GET", f"/api/{self._session}/groups", timeout=15)
+            groups = body if status == 200 and isinstance(body, dict) else {}
+        except Exception:
+            groups = {}
+        for gid in groups:
+            contacts.extend(await self._access_contacts(gid))
+        return contacts
+
     def _map_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """WAHA webhook payload → the bridge-shaped dict the shared mixin gates on."""
         chat_id = str(payload.get("chatId") or payload.get("from") or "")
@@ -357,6 +462,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if data["isGroup"]:
             body = self._clean_bot_mention_text(body, data)
         quoted = bool(data.get("hasQuotedMessage"))
+        mentioned = data.get("mentionedIds") or []
         return MessageEvent(
             text=body, message_type=msg_type, source=source, raw_message=payload,
             message_id=data.get("messageId"), media_urls=cached_urls, media_types=media_types,
@@ -364,6 +470,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reply_to_text=data.get("quotedText"),
             reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
             reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
+            metadata={"mentions": [{"id": mid} for mid in mentioned]},
         )
 
     @staticmethod

@@ -60,6 +60,25 @@ waha:
   send_read_receipts: false
 ```
 
+### Managing access from chat: `/access`
+
+Once you are an admin (`allow_admin_from` / `group_allow_admin_from` in the platform
+block, same shape as Telegram's), you can manage the lists from the chat itself — no
+config edit or restart:
+
+```
+/access list                        show both allowlists
+/access allow user 0812-3456-789    local, national or +international formats all work
+/access allow user @Niken           PushName, resolved against the chat's participants
+/access deny  user 6281234567890    remove again
+/access allow group "Kelas XI-C"    group name, or the raw 123…@g.us id
+/access deny  group "Kelas XI-C"
+```
+
+Ambiguous names reply with the matching candidates instead of guessing. Changes take
+effect immediately (the running adapter's lists are updated in place) and are persisted
+to `config.yaml`.
+
 ## Step 2: Register the WAHA webhook
 
 WAHA pushes inbound messages to Hermes over HTTP. Point the session webhook at the

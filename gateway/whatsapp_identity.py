@@ -94,3 +94,120 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
     # when no lid-mapping files are present.
     aliases = expand_whatsapp_aliases(normalized)
     return min(aliases, key=lambda c: (len(c), c))
+
+
+# ITU country calling codes (E.164). Longest-prefix matched, so ``1`` vs ``1809`` style
+# overlaps resolve to the longer code. NANP sub-areas (``1-24x``/``1-6xx``/``1-8xx``) are
+# covered by ``1`` itself; the list only needs the codes that start a number.
+_ITU_COUNTRY_CODES: frozenset[str] = frozenset({
+    "1", "7", "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44",
+    "45", "46", "47", "48", "49", "51", "52", "53", "54", "55", "56", "57", "58", "60", "61",
+    "62", "63", "64", "65", "66", "81", "82", "84", "86", "90", "91", "92", "93", "94", "95",
+    "98", "211", "212", "213", "216", "218", "220", "221", "222", "223", "224", "225", "226",
+    "227", "228", "229", "230", "231", "232", "233", "234", "235", "236", "237", "238", "239",
+    "240", "241", "242", "243", "244", "245", "246", "248", "249", "250", "251", "252", "253",
+    "254", "255", "256", "257", "258", "260", "261", "262", "263", "264", "265", "266", "267",
+    "268", "269", "290", "291", "297", "298", "299", "350", "351", "352", "353", "354", "355",
+    "356", "357", "358", "359", "370", "371", "372", "373", "374", "375", "376", "377", "378",
+    "380", "381", "382", "383", "385", "386", "387", "389", "420", "421", "423", "500", "501",
+    "502", "503", "504", "505", "506", "507", "508", "509", "590", "591", "592", "593", "594",
+    "595", "596", "597", "598", "599", "670", "672", "673", "674", "675", "676", "677", "678",
+    "679", "680", "681", "682", "683", "685", "686", "687", "688", "689", "690", "691", "692",
+    "800", "808", "850", "852", "853", "855", "856", "870", "880", "881", "882", "883", "888",
+    "960", "961", "962", "963", "964", "965", "966", "967", "968", "970", "971", "972", "973",
+    "974", "975", "976", "977", "992", "993", "994", "995", "996", "998",
+})
+
+# E.164 caps at 15 digits; national numbers are never shorter than ~6 (7 with cc).
+_MIN_E164_DIGITS = 7
+_MAX_E164_DIGITS = 15
+# Shortest national significant number accepted for "local number, prepend home cc".
+_MIN_NSN_DIGITS = 7
+
+
+def default_country_code(own_number: str) -> str:
+    """Country calling code of *own_number* (the bot's own E.164 digits) via longest ITU
+    prefix match; ``""`` when it cannot be determined.  This is how ``0812…`` on an
+    Indonesian bot and ``(555) …`` on a US bot both resolve — the bot's own country is
+    the only sane default for local-format input."""
+    digits = re.sub(r"\D+", "", str(own_number or ""))
+    for length in range(min(_MAX_E164_DIGITS, len(digits)), 0, -1):
+        if digits[:length] in _ITU_COUNTRY_CODES and len(digits) - length >= _MIN_NSN_DIGITS:
+            return digits[:length]
+    return ""
+
+
+def normalize_phone_e164(raw: str, default_cc: str = "") -> str:
+    """Normalize a human-supplied phone number to bare E.164 digits (no ``+``).
+
+    Accepts the formats people actually type: ``+62812…``, ``62 812-345…``, ``0812…``
+    (national trunk — ``0`` replaced by *default_cc*), ``(555) 123-4567`` (no country —
+    *default_cc* prepended), ``001…``/``011…`` (international dial-out prefixes), and
+    numbers that already carry their country code.  ``default_cc`` comes from the bot's
+    own number (:func:`default_country_code`) so the same input normalizes correctly on
+    bots in different countries.  Returns ``""`` when *raw* is not a plausible phone
+    number; already-international input never needs *default_cc*.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    digits = re.sub(r"\D+", "", text)
+    if not digits:
+        return ""
+    if text.startswith("+"):
+        # ``+`` contributes no digits and settles the question: already E.164.
+        return digits if _MIN_E164_DIGITS <= len(digits) <= _MAX_E164_DIGITS else ""
+    # International dial-out prefixes, longest first so ``0011`` (AU) wins over ``00``;
+    # ``011`` is the NANP prefix. The remainder is already E.164 — return it as-is.
+    for prefix in ("0011", "011", "00"):
+        if digits.startswith(prefix):
+            digits = digits[len(prefix):]
+            return digits if _MIN_E164_DIGITS <= len(digits) <= _MAX_E164_DIGITS else ""
+    if digits.startswith("0"):
+        # National trunk digit: only meaningful with a known home country.
+        if not default_cc:
+            return ""
+        digits = default_cc + digits[1:]
+    elif not default_cc:
+        # No home context and no ``+``/dial-out prefix: the digits could be anything,
+        # and a wrong guess silently stores a dead allowlist entry.  Reject.
+        return ""
+    elif not _looks_international(digits, default_cc):
+        # Local interpretation wins for ambiguous input (``5551234567`` on a US bot,
+        # ``8123456789`` on an Indonesian bot): prepend the home country code.  A
+        # *foreign* number must be typed with ``+`` — guessing a foreign code from a
+        # bare digit prefix (``55`` = Brazil? or a local ``555…``?) silently stores a
+        # dead allowlist entry, which is worse than requiring the ``+``.
+        if len(digits) < _MIN_NSN_DIGITS:
+            return ""
+        digits = default_cc + digits
+    if not (_MIN_E164_DIGITS <= len(digits) <= _MAX_E164_DIGITS):
+        return ""
+    return digits
+
+
+# NANP (country code ``1``) national numbers are EXACTLY 10 digits — the only common
+# case where local dialing ("5551234567") collides head-on with the country code.
+_NANP_NSN_DIGITS = 10
+
+
+def _nsn_plausible(digits: str, default_cc: str) -> bool:
+    """Whether *digits* minus *default_cc* looks like a real national number for the
+    home country.  Only the NANP's fixed-10 rule is worth encoding; elsewhere any
+    remainder of at least ``_MIN_NSN_DIGITS`` is plausible."""
+    rest = digits[len(default_cc):]
+    if default_cc == "1":
+        return len(rest) == _NANP_NSN_DIGITS
+    return len(rest) >= _MIN_NSN_DIGITS
+
+
+def _looks_international(digits: str, default_cc: str) -> bool:
+    """Whether *digits* already carries the HOME country code rather than being a local
+    number.  Starts-with-home-cc is only accepted when what follows is a plausible
+    national number, so a NANP local number (``5551234567``) is not mistaken for
+    ``1``-international.  Foreign codes are deliberately NOT detected here: ``55…``
+    could be Brazil or a local ``555…`` — the local reading wins and foreign numbers
+    are typed with ``+``."""
+    if not digits.startswith(default_cc):
+        return False
+    return _nsn_plausible(digits, default_cc)

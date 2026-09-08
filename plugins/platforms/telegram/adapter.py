@@ -370,6 +370,12 @@ class _PollingLifecycleAbort(RuntimeError):
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("TELEGRAM_ALLOWED_USERS",),
+        "group": ("TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS"),
+    }
+
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)

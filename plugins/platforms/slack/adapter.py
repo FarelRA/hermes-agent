@@ -855,6 +855,12 @@ class SlackAdapter(BasePlatformAdapter):
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
 
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("SLACK_ALLOWED_USERS",),
+        "group": ("SLACK_ALLOWED_CHANNELS",),
+    }
+
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     # Typing indicator is a text status line (assistant.threads.setStatus): fed live phrases.

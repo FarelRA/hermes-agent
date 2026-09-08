@@ -987,6 +987,12 @@ from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 
 
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+
+    # /access env carriers (gateway/slash_commands_access.py contract).
+    ACCESS_ALLOWLIST_ENV_KEYS = {
+        "user": ("DISCORD_ALLOWED_USERS",),
+        "group": ("DISCORD_ALLOWED_CHANNELS",),
+    }
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
