@@ -253,7 +253,11 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[waha] failed to build event", exc_info=True)
             return web.Response(status=200)
         if event_obj and self._message_handler:
-            await self._message_handler(event_obj)
+            # The handler's return carries replies the agent path didn't deliver
+            # itself (slash-command results, drain/limit notices). Route it through
+            # the shared inline-reply helper — same contract as the other adapters —
+            # instead of dropping it: agent turns already delivered return None.
+            await self._dispatch_inline_reply(event_obj, log_cmd=event_obj.get_command())
         return web.Response(status=200)
 
     def _lid_alt_jid(self, payload: Dict[str, Any]) -> str:

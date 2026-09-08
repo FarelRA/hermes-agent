@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.base import MessageType, SendResult
 from plugins.platforms.waha.adapter import (
     WahaAdapter,
     _mentioned_ids_from_data,
@@ -428,6 +428,44 @@ class TestWebhookAuth:
         request.headers = {"X-Hermes-Token": "tok-123"}
         response = asyncio.run(adapter._handle_webhook(request))
         assert response.status == 200
+
+
+# ---------------------------------------------------------------------------
+# webhook handler replies (slash commands, drain/limit notices)
+# ---------------------------------------------------------------------------
+
+class TestWebhookHandlerReply:
+    def _post_message(self, adapter, body):
+        request = MagicMock()
+
+        async def _json():
+            return {"event": "message", "payload": _dm_payload(body=body)}
+        request.json = AsyncMock(side_effect=_json)
+        request.headers = {}
+        return asyncio.run(adapter._handle_webhook(request))
+
+    def test_handler_text_reply_is_delivered(self):
+        """A truthy handler return (slash-command result, drain/limit notice)
+        must reach the chat — the agent path returns None when it already
+        delivered itself, so sending the return cannot double-send."""
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock(return_value="Available commands: /help")
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        response = self._post_message(adapter, "/help")
+        assert response.status == 200
+        adapter.send.assert_called_once()
+        call = adapter.send.call_args
+        assert call.kwargs["chat_id"] == "6281234567890@c.us"
+        assert call.kwargs["content"] == "Available commands: /help"
+
+    def test_handler_none_sends_nothing(self):
+        """An already-delivered agent turn returns None — nothing must be sent."""
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock(return_value=None)
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        response = self._post_message(adapter, "hello there")
+        assert response.status == 200
+        adapter.send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
