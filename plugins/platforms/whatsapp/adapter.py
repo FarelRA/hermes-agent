@@ -774,6 +774,97 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return MessageType.TEXT
         return next((kind for needle, kind in _MEDIA_NEEDLES if needle in media_type), MessageType.DOCUMENT)
 
+    # ------------------------------------------------------------------ /access resolution
+
+    async def resolve_access_ref(self, ref: str, *, scope: str, event=None):
+        """Turn a human-supplied reference into a canonical id (the /access contract).
+
+        Phones in any format resolve through the shared mixin; group names and
+        @PushNames resolve through the bridge's ``/groups`` endpoint (Baileys
+        groupMetadata).  ``None`` when not WhatsApp-shaped; ambiguity returns
+        ``candidates`` instead of a guess."""
+        from gateway.slash_commands_access import AccessResolution
+
+        text = str(ref or "").strip()
+        if not text:
+            return None
+        if scope == "group":
+            return await self._access_resolve_group(text)
+        return await self._access_resolve_user(text, event)
+
+    async def _access_bridge_groups(self) -> dict:
+        """``{jid: {"subject": …, "participants": [jid, …]}}`` from the bridge; {} when
+        the bridge is down or the endpoint predates this feature."""
+        try:
+            async with self._bridge_req("get", "groups", 15) as resp:
+                body = await resp.json(content_type=None)
+                return body if isinstance(body, dict) else {}
+        except Exception:
+            logger.debug("[whatsapp] /access group roster unavailable", exc_info=True)
+            return {}
+
+    async def _access_resolve_group(self, text: str) -> "AccessResolution":
+        from gateway.slash_commands_access import AccessResolution
+
+        if "@" in text:
+            return AccessResolution(canonical=canonical_phone_jid(text))
+        groups = await self._access_bridge_groups()
+        entries = [(gid, str(g.get("subject") or "")) for gid, g in groups.items() if isinstance(g, dict)]
+        lowered = text.lower()
+        exact = [(gid, subj) for gid, subj in entries if subj == text]
+        if len(exact) == 1:
+            return AccessResolution(canonical=exact[0][0], label=exact[0][1])
+        ci = [(gid, subj) for gid, subj in entries if subj.lower() == lowered]
+        if len(ci) == 1:
+            return AccessResolution(canonical=ci[0][0], label=ci[0][1])
+        substring = [(gid, subj) for gid, subj in entries if lowered in subj.lower()]
+        if len(substring) == 1:
+            return AccessResolution(canonical=substring[0][0], label=substring[0][1])
+        if substring:
+            return AccessResolution(candidates=tuple(substring[:8]))
+        return AccessResolution(canonical=text)
+
+    async def _access_resolve_user(self, text: str, event) -> "AccessResolution":
+        from gateway.slash_commands_access import AccessResolution
+
+        if text.startswith("@"):
+            # PushName: the triggering chat's participants (authoritative roster).
+            needle = text[1:].lower()
+            chat_id = event.source.chat_id if event is not None and event.source else ""
+            for jid, pushname in await self._access_contacts(chat_id):
+                if (pushname or "").lower() == needle:
+                    return AccessResolution(canonical=jid, label=pushname)
+            matches = [(jid, pn) for jid, pn in await self._access_contacts("") if (pn or "").lower() == needle]
+            if len(matches) == 1:
+                return AccessResolution(canonical=matches[0][0], label=matches[0][1])
+            if matches:
+                return AccessResolution(candidates=tuple(matches[:8]))
+            return AccessResolution()
+        if "@" in text:
+            return AccessResolution(canonical=canonical_phone_jid(text))
+        return None  # phone-shaped: the shared mixin's generic fallback normalizes it
+
+    async def _access_contacts(self, chat_id: str) -> list:
+        """``[(canonical jid, pushname), …]`` for one group's participants (or across
+        every participating group when ``chat_id`` is empty).  The bridge exposes
+        participant JIDs; pushnames come from the group's stored member names when the
+        bridge provides them, else the JID local part."""
+        contacts: list = []
+        groups = await self._access_bridge_groups()
+        if chat_id and chat_id.endswith("@g.us"):
+            meta = groups.get(chat_id) or {}
+            for pid in meta.get("participants") or []:
+                jid = canonical_phone_jid(str(pid))
+                if jid:
+                    contacts.append((jid, jid.split("@", 1)[0]))
+            return contacts
+        for gid, meta in groups.items():
+            for pid in (meta.get("participants") or []):
+                jid = canonical_phone_jid(str(pid))
+                if jid:
+                    contacts.append((jid, jid.split("@", 1)[0]))
+        return contacts
+
     async def _collect_bridge_media(self, data: Dict[str, Any], msg_type: MessageType) -> tuple[list, list]:
         """``mediaUrls`` → ``(cached_urls, media_types)``: remote image/audio cached locally; absolute paths only inside a cache dir."""
         accepted: list[tuple] = []  # (url_or_path, mime)

@@ -1067,6 +1067,27 @@ app.post('/read', async (req, res) => {
 });
 
 // Chat info
+// All groups the session participates in: id + subject + participants (Baileys-native
+// JIDs). Powers /access group-name resolution and pushname lookups on the bridge
+// transport; the Python adapter canonicalizes every id it receives.
+app.get('/groups', async (req, res) => {
+  if (!sock) return res.json({});
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    const out = {};
+    for (const [id, meta] of Object.entries(groups || {})) {
+      out[id] = {
+        subject: meta.subject || '',
+        size: (meta.participants || []).length,
+        participants: (meta.participants || []).map(p => p.id),
+      };
+    }
+    return res.json(out);
+  } catch (err) {
+    return res.status(500).json({ error: 'groupFetchAllParticipating failed', message: err.message });
+  }
+});
+
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
   const isGroup = chatId.endsWith('@g.us');

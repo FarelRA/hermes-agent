@@ -140,6 +140,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
+from gateway.slash_commands_resolve_platforms import PlatformAccessResolversMixin
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, classify_send_error,
@@ -367,7 +368,7 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(PlatformAccessResolversMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # /access env carriers (gateway/slash_commands_access.py contract).
@@ -6334,11 +6335,21 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        # Mention metadata for /access and the generic mention fallback: text_mention
+        # entities carry the resolved user; plain @username mentions stay text-only.
+        mentions = []
+        for entity in (getattr(message, "entities", None) or []):
+            mentioned_user = getattr(entity, "user", None)
+            if mentioned_user is not None and getattr(mentioned_user, "id", None):
+                mentions.append({"id": str(mentioned_user.id),
+                                 "label": getattr(mentioned_user, "full_name", None)
+                                 or getattr(mentioned_user, "username", None) or ""})
         return MessageEvent(
             text=message.text or "", message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
+            metadata={"mentions": mentions} if mentions else None,
             timestamp=message.date)
 
     # -- Message reactions (processing lifecycle) --
