@@ -55,6 +55,21 @@ class PlatformAccessResolversMixin:
 
         if text.lstrip("-").isdigit():
             return AccessResolution(canonical=text)
+        if not text.startswith("@"):
+            # Bare title: the Bot API cannot search by title, but the bot has SEEN the
+            # chats it participates in — resolve against that learned directory
+            # (private groups have no @username, so this is the only name path).
+            cache = getattr(self, "_seen_chats", None) or {}
+            needle = text.lower()
+            exact = cache.get(needle)
+            if exact:
+                return AccessResolution(canonical=exact, label=text)
+            substring = [(name, cid) for name, cid in cache.items() if needle in name]
+            if len(substring) == 1:
+                return AccessResolution(canonical=substring[0][1], label=substring[0][0])
+            if substring:
+                return AccessResolution(candidates=tuple(substring[:8]))
+            return None
         if self._bot is None:
             return None
         try:
@@ -87,15 +102,18 @@ class PlatformAccessResolversMixin:
         needle = text.lstrip("@#").lower()
         matches: list = []
         if scope == "group":
-            for guild in client.guilds:
-                for channel in getattr(guild, "channels", []) or []:
-                    if (channel.name or "").lower() == needle:
-                        return AccessResolution(canonical=str(channel.id), label=channel.name)
-            substring = []
-            for guild in client.guilds:
-                for channel in getattr(guild, "channels", []) or []:
-                    if needle in (channel.name or "").lower():
-                        substring.append((str(channel.id), channel.name))
+            def _iter_channels():
+                for guild in client.guilds:
+                    yield from getattr(guild, "channels", []) or []
+                    # Active threads are not in guild.channels — scan them too so
+                    # "/access allow group <thread name>" resolves like channel names.
+                    yield from getattr(guild, "threads", []) or []
+
+            for channel in _iter_channels():
+                if (channel.name or "").lower() == needle:
+                    return AccessResolution(canonical=str(channel.id), label=channel.name)
+            substring = [(str(channel.id), channel.name) for channel in _iter_channels()
+                         if needle in (channel.name or "").lower()]
             if len(substring) == 1:
                 return AccessResolution(canonical=substring[0][0], label=substring[0][1])
             if substring:
@@ -128,7 +146,10 @@ class PlatformAccessResolversMixin:
         plain names → ``conversations.list``.  ``<@U…>`` wrappers strip to the id."""
         from gateway.slash_commands_access import AccessResolution
 
-        client = self._client_for("", None)
+        team_id = None
+        if event is not None and isinstance(getattr(event, "metadata", None), dict):
+            team_id = event.metadata.get("slack_team_id")
+        client = self._client_for("", {"slack_team_id": team_id} if team_id else None)
         if client is None:
             return AccessResolution(canonical=text) if text[:1] in ("U", "C", "W", "G") else None
         if text.startswith("<@") and text.endswith(">"):

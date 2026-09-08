@@ -525,8 +525,13 @@ async function startSocket() {
     for (const msg of messages) {
       if (!msg.message) continue;
 
-      const chatId = msg.key.remoteJid;
-      const senderId = msg.key.participant || chatId;
+      // LID resolution at the boundary: LID-addressed chats/senders are mapped to their
+      // phone JID via the session's lid-mapping files when the pair is known, so the
+      // Python side sees one canonical identity (unresolved @lid passes through — the
+      // adapter's alt-field/cache path handles those).
+      const resolveLid = (jid) => (jid && jid.endsWith('@lid') && lidToPhone[jid]) ? lidToPhone[jid] : jid;
+      const chatId = resolveLid(msg.key.remoteJid);
+      const senderId = resolveLid(msg.key.participant) || resolveLid(chatId);
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
       emitDebugEvent({

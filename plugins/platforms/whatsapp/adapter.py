@@ -839,6 +839,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return AccessResolution(canonical=matches[0][0], label=matches[0][1])
             if matches:
                 return AccessResolution(candidates=tuple(matches[:8]))
+            learned = self._access_pushname_lookup(needle)
+            if learned:
+                return AccessResolution(canonical=learned, label=text[1:])
             return AccessResolution()
         if "@" in text:
             return AccessResolution(canonical=canonical_phone_jid(text))
@@ -942,6 +945,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # any dialect (@c.us, bare digits) and store the one canonical form.
             source = self.build_source(chat_id=canonical_phone_jid(data.get("chatId", "")), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
                                        user_id=canonical_phone_jid(data.get("senderId")), user_name=data.get("senderName"))
+            # Learn the sender's real pushName for /access @Name resolution (group
+            # rosters carry JIDs without names).
+            self.remember_pushname(data.get("senderId"), data.get("senderName"))
             cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
             body = data.get("body", "")
             if data.get("isGroup"):
@@ -958,6 +964,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
             ) if v}
+            # Standard mention metadata: the bridge forwards contextInfo.mentionedJid
+            # (canonicalized) — consumed by /access and mention-based features.
+            mentions = [{"id": mid, "label": ""} for mid in (data.get("mentionedIds") or []) if mid]
+            if mentions:
+                metadata["mentions"] = mentions
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.
             if data.get("fromOwner"):

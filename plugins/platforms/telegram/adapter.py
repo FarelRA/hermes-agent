@@ -6330,6 +6330,20 @@ class TelegramAdapter(PlatformAccessResolversMixin, BasePlatformAdapter):
             user_id=(str(user.id) if user else (str(chat.id) if chat_type in {"dm", "channel"} else None)),
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
+        # Learn chat names for /access group-name resolution: the Bot API cannot look
+        # up private groups by title, but every inbound update names the chats the bot
+        # is in (title for groups/channels, username for public ones).
+        try:
+            cache = getattr(self, "_seen_chats", None)
+            if cache is None:
+                cache = self._seen_chats = {}
+            for name in filter(None, {str(getattr(chat, "title", "") or "").strip(),
+                                      str(getattr(chat, "username", "") or "").strip()}):
+                if len(cache) >= 512 and name.lower() not in cache:
+                    cache.pop(next(iter(cache)), None)
+                cache[name.lower()] = str(chat.id)
+        except Exception:
+            pass
         reply_to_id, reply_to_text = self._reply_context(message)
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt

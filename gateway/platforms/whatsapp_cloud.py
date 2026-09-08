@@ -238,6 +238,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
         return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
 
+    async def resolve_access_ref(self, ref: str, *, scope: str, event=None):
+        """Cloud-API /access resolution: numeric wa_ids pass through, phones normalize
+        through the shared mixin, @Name resolves against pushnames learned from inbound
+        events (Meta exposes no roster API).  Group scope returns None honestly — this
+        adapter drops group-shaped payloads (Meta group support is not implemented)."""
+        from gateway.slash_commands_access import AccessResolution
+
+        text = str(ref or "").strip()
+        if not text:
+            return None
+        if scope == "group":
+            return None
+        if text.startswith("@"):
+            learned = self._access_pushname_lookup(text[1:])
+            return AccessResolution(canonical=learned, label=text[1:]) if learned else AccessResolution()
+        if "@" in text:
+            return AccessResolution(canonical=canonical_phone_jid(text))
+        return None  # phone-shaped: the shared mixin's generic fallback normalizes it
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Allowlist check against the normalized bare wa_id.  The stored canonical id
         is ``@s.whatsapp.net``; both sides fold to bare digits so any dialect in the
@@ -981,6 +1000,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # The contacts roster is keyed by Meta's bare wa_id — look up BEFORE the
         # canonical form replaces the wire id.
         sender_name = contacts_by_waid.get(raw_wa_id, "")
+        # Learn the sender's profile name for /access @Name resolution (Meta exposes
+        # no roster API; inbound profile names are the only directory).
+        self.remember_pushname(sender_id, sender_name)
         # DMs only: chat_id == sender wa_id. A ``chat`` field marks a group-shaped
         # payload (capability-gated by Meta) — refuse rather than treat as a DM.
         if raw_message.get("chat"):

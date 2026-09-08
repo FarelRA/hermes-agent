@@ -366,6 +366,11 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return AccessResolution(canonical=jid, label=pn)
             if len(matches) > 1:
                 return AccessResolution(candidates=tuple(matches[:8]))
+            # Roster came up empty (NOWEB participants carry no names) — fall back to
+            # the pushnames learned from inbound traffic.
+            learned = self._access_pushname_lookup(needle)
+            if learned:
+                return AccessResolution(canonical=learned, label=text[1:])
             return AccessResolution()
         if "@" in text:
             resolved = self._resolve_lid(text) if text.endswith("@lid") else text
@@ -448,6 +453,9 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _build_message_event(self, payload: Dict[str, Any]) -> Optional[MessageEvent]:
         """WAHA payload → MessageEvent (or None when the shared gate skips it)."""
         data = self._map_payload(payload)
+        # Learn the sender's real pushName for /access @Name resolution (rosters on
+        # NOWEB carry JIDs without names).
+        self.remember_pushname(data.get("senderId"), data.get("senderName"))
         if not self._should_process_message(data):
             if self._should_observe_unmentioned_group_message(data):
                 await self._observe_bridge_group_message(data)

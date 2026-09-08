@@ -186,6 +186,33 @@ class WhatsAppBehaviorMixin:
         e164 = normalize_phone_e164(ref, self._own_country_code())
         return canonical_phone_jid(e164) if e164 else ""
 
+    # ------------------------------------------------------------------ learned pushnames
+    # Group rosters (Baileys participants, WAHA NOWEB participants) carry JIDs without
+    # display names, but EVERY inbound event carries the sender's real pushName.  The
+    # cache below turns that stream into a name → JID directory so ``/access allow
+    # user @Name`` works on every WhatsApp transport, not just the ones whose roster
+    # API happens to include names.
+
+    def remember_pushname(self, jid: str, name: Optional[str]) -> None:
+        """Learn ``name → canonical jid`` from an inbound event (best-effort; skips
+        empty/numeric-only names).  Bounded so a long-lived gateway cannot grow it
+        without limit."""
+        name = str(name or "").strip()
+        jid = canonical_phone_jid(str(jid or ""))
+        if not name or not jid or name.isdigit():
+            return
+        cache = getattr(self, "_pushname_cache", None)
+        if cache is None:
+            cache = self._pushname_cache = {}
+        if len(cache) >= 512 and name.lower() not in cache:
+            cache.pop(next(iter(cache)), None)
+        cache[name.lower()] = jid
+
+    def _access_pushname_lookup(self, name: str) -> Optional[str]:
+        """Canonical JID for a learned pushname (exact, case-insensitive), else ``None``."""
+        cache = getattr(self, "_pushname_cache", None) or {}
+        return cache.get(str(name or "").strip().lower())
+
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
         """Status updates (Stories) and Channel/Newsletter broadcasts — never reply

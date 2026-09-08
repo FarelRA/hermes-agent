@@ -6,6 +6,8 @@ covered by tests/gateway/test_whatsapp_identity_phone.py.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -136,3 +138,27 @@ def test_sender_id_canonicalized_to_cus():
     data = adapter._map_payload(payload)
     assert data["senderId"] == "6285157813352@s.whatsapp.net"
     assert data["chatId"] == "6285157813352@s.whatsapp.net"
+
+
+def test_pushname_learned_from_inbound_events():
+    """Group rosters (NOWEB) carry JIDs without names; every inbound event carries the
+    sender's real pushName.  /access @Name must resolve from that learned directory."""
+    adapter = _adapter()
+    data = adapter._map_payload({"chatId": "6285157813352@s.whatsapp.net",
+                                 "from": "6285157813352@s.whatsapp.net", "fromMe": False,
+                                 "body": "x", "sender": {"pushName": "Farel"}})
+    adapter.remember_pushname(data["senderId"], data["senderName"])
+    assert adapter._access_pushname_lookup("farel") == "6285157813352@s.whatsapp.net"
+    # numeric-only "names" are not learnable
+    adapter.remember_pushname("6289603167061@s.whatsapp.net", "6289603167061")
+    assert adapter._access_pushname_lookup("6289603167061") is None
+
+
+def test_resolver_falls_back_to_learned_pushname():
+    # A name NOT in the roster (roster matches win — they are authoritative): the
+    # learned pushname directory is the fallback for names the roster lacks.
+    adapter = _adapter()
+    adapter.remember_pushname("6289603167061@s.whatsapp.net", "Teman Baru")
+    res = asyncio.run(adapter.resolve_access_ref("@Teman Baru", scope="user"))
+    assert res.canonical == "6289603167061@s.whatsapp.net"
+    assert res.label == "Teman Baru"
