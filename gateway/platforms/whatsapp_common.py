@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from gateway.whatsapp_identity import canonical_phone_jid
+
 from gateway.platforms._shared import get_scoped_secret as _get_wsecret
 from gateway.platforms.whatsapp_renderer import CommonMarkToWhatsApp, _flank_stray_delims
 
@@ -116,11 +118,17 @@ class WhatsAppBehaviorMixin:
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
-        """Parse allow_from / group_allow_from from config (list) or env var (CSV)."""
+        """Parse allow_from / group_allow_from from config (list) or env var (CSV) and
+        canonicalize every entry's DIALECT — ``@c.us``, bare digits and ``@lid`` forms
+        fold into the one internal standard (``@s.whatsapp.net``) so the gate compares
+        like with like.  Country-aware normalization of local trunk formats (``0812…``)
+        needs the bot's own country code, which is only known once connected — that
+        happens on the interactive ``/access`` path (``_access_phone_jid``), not here."""
         if raw is None:
             return set()
         parts = raw if isinstance(raw, list) else str(raw).split(",")
-        return {str(part).strip() for part in parts if str(part).strip()}
+        from gateway.whatsapp_identity import canonicalize_id_list
+        return set(canonicalize_id_list(parts))
 
     def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
         """Pick the raw DM allowlist by key *presence*: ``allow_from``/``allowFrom`` in config (an
@@ -155,7 +163,9 @@ class WhatsAppBehaviorMixin:
         normalized = str(value).strip()
         if ":" in normalized and "@" in normalized:
             normalized = normalized.replace(":", "@", 1)
-        return normalized
+        # One canonical internal form (@s.whatsapp.net) regardless of the wire dialect
+        # the engine delivered — @c.us (WAHA) and bare digits (Cloud wa_id) fold in.
+        return canonical_phone_jid(normalized)
 
     def _own_country_code(self) -> str:
         """The session's own country calling code (from the bot's phone JID), for
@@ -168,12 +178,13 @@ class WhatsAppBehaviorMixin:
         return ""
 
     def _access_phone_jid(self, ref: str) -> str:
-        """``<e164>@c.us`` for a human-supplied phone in any local/international format,
-        normalized against the session's own country; ``""`` when not a plausible phone
-        (the caller replies with usage help instead of storing a guess)."""
+        """Canonical JID (``@s.whatsapp.net``) for a human-supplied phone in any
+        local/international format, normalized against the session's own country;
+        ``""`` when not a plausible phone (the caller replies with usage help instead
+        of storing a guess)."""
         from gateway.whatsapp_identity import normalize_phone_e164
         e164 = normalize_phone_e164(ref, self._own_country_code())
-        return f"{e164}@c.us" if e164 else ""
+        return canonical_phone_jid(e164) if e164 else ""
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:

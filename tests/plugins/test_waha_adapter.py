@@ -58,14 +58,14 @@ def _make_adapter(**extra_overrides):
 
 def _dm_payload(body="hello there", **overrides):
     payload = {
-        "id": "false_6281234567890@c.us_ABC",
+        "id": "false_6281234567890@s.whatsapp.net_ABC",
         "timestamp": 1757000000,
-        "from": "6281234567890@c.us",
-        "chatId": "6281234567890@c.us",
+        "from": "6281234567890@s.whatsapp.net",
+        "chatId": "6281234567890@s.whatsapp.net",
         "fromMe": False,
         "body": body,
         "hasMedia": False,
-        "participant": "6281234567890@c.us",
+        "participant": "6281234567890@s.whatsapp.net",
         "sender": {"pushName": "Farel"},
         "_data": {"message": {"conversation": body}},
     }
@@ -77,7 +77,7 @@ def _group_payload(body="just chatting", **overrides):
     payload = _dm_payload(body, **overrides)
     payload["chatId"] = "120363001234567890@g.us"
     payload["from"] = "120363001234567890@g.us"
-    payload["participant"] = "6281234567890@c.us"
+    payload["participant"] = "6281234567890@s.whatsapp.net"
     return payload
 
 
@@ -89,8 +89,8 @@ class TestPayloadMapping:
     def test_dm_mapping(self):
         adapter = _make_adapter()
         data = adapter._map_payload(_dm_payload())
-        assert data["chatId"] == "6281234567890@c.us"
-        assert data["senderId"] == "6281234567890@c.us"
+        assert data["chatId"] == "6281234567890@s.whatsapp.net"
+        assert data["senderId"] == "6281234567890@s.whatsapp.net"
         assert data["isGroup"] is False
         assert data["body"] == "hello there"
         assert data["botIds"] == ["15551230000@s.whatsapp.net"]
@@ -110,8 +110,8 @@ class TestPayloadMapping:
         payload["chatId"] = "231580811403454@lid"
         payload["participant"] = "231580811403454@lid"
         data = adapter._map_payload(payload)
-        assert data["chatId"] == "6281234567890@c.us"
-        assert data["senderId"] == "6281234567890@c.us"
+        assert data["chatId"] == "6281234567890@s.whatsapp.net"
+        assert data["senderId"] == "6281234567890@s.whatsapp.net"
 
     def test_lid_without_alt_kept_as_is(self):
         adapter = _make_adapter()
@@ -132,13 +132,13 @@ class TestPayloadMapping:
                                     "participantAlt": "6281234567890@s.whatsapp.net",
                                     "addressingMode": "lid"}}
         data = adapter._map_payload(payload)
-        assert data["senderId"] == "6281234567890@c.us"
+        assert data["senderId"] == "6281234567890@s.whatsapp.net"
 
     def test_webhook_me_lid_added_to_bot_ids(self):
         """LID-addressed groups mention/quote the bot by its LID; botIds must hold both
         forms so reply/mention gates match either."""
         adapter = _make_adapter(webhook_secret="")
-        me = {"id": "6289682642242@c.us", "lid": "237512412930265@lid"}
+        me = {"id": "6289682642242@s.whatsapp.net", "lid": "237512412930265@lid"}
 
         async def _json():
             return {"event": "message", "me": me, "payload": _group_payload()}
@@ -146,13 +146,13 @@ class TestPayloadMapping:
         request.json = AsyncMock(side_effect=_json)
         request.headers = {}
         asyncio.run(adapter._handle_webhook(request))
-        assert adapter._bot_ids == {"6289682642242@c.us", "237512412930265@lid"}
+        assert adapter._bot_ids == {"6289682642242@s.whatsapp.net", "237512412930265@lid"}
 
     def test_group_mapping_uses_participant_as_sender(self):
         adapter = _make_adapter()
         data = adapter._map_payload(_group_payload())
         assert data["isGroup"] is True
-        assert data["senderId"] == "6281234567890@c.us"  # participant, not the group JID
+        assert data["senderId"] == "6281234567890@s.whatsapp.net"  # participant, not the group JID
 
     def test_mentioned_ids_extracted_from_engine_data(self):
         payload = _group_payload()
@@ -165,14 +165,14 @@ class TestPayloadMapping:
 
     def test_reply_to_mapping(self):
         payload = _dm_payload(replyTo={
-            "id": "false_15551230000@c.us_XYZ",
-            "participant": "15551230000@c.us",
+            "id": "false_15551230000@s.whatsapp.net_XYZ",
+            "participant": "15551230000@s.whatsapp.net",
             "body": "earlier message",
         })
         data = _make_adapter()._map_payload(payload)
         assert data["hasQuotedMessage"] is True
-        assert data["quotedMessageId"] == "false_15551230000@c.us_XYZ"
-        assert data["quotedParticipant"] == "15551230000@c.us"
+        assert data["quotedMessageId"] == "false_15551230000@s.whatsapp.net_XYZ"
+        assert data["quotedParticipant"] == "15551230000@s.whatsapp.net"
         assert data["quotedText"] == "earlier message"
 
 
@@ -186,13 +186,13 @@ class TestGating:
         event = asyncio.run(adapter._build_message_event(_dm_payload()))
         assert event is not None
         assert event.message_type == MessageType.TEXT
-        assert event.source.chat_id == "6281234567890@c.us"
+        assert event.source.chat_id == "6281234567890@s.whatsapp.net"
 
     def test_unknown_dm_dropped(self):
         adapter = _make_adapter()
         payload = _dm_payload()
-        payload["from"] = payload["chatId"] = "6289999999999@c.us"
-        payload["participant"] = "6289999999999@c.us"
+        payload["from"] = payload["chatId"] = "6289999999999@s.whatsapp.net"
+        payload["participant"] = "6289999999999@s.whatsapp.net"
         assert asyncio.run(adapter._build_message_event(payload)) is None
 
     def test_unmentioned_group_message_observed_not_dispatched(self):
@@ -273,7 +273,7 @@ class TestOutbound:
 
         async def _fake_request(method, path, payload=None, timeout=30):
             captured.append((method, path, payload))
-            return 200, {"key": {"remoteJid": "6281234567890@s.whatsapp.net",
+            return 200, {"key": {"remoteJid": "6281234567890@c.us",
                                  "fromMe": True, "id": f"wamid.out{len(captured)}"}}
 
         adapter._request = _fake_request
@@ -281,17 +281,18 @@ class TestOutbound:
 
     def test_send_formats_and_posts(self):
         adapter, captured = self._capture_adapter()
-        result = asyncio.run(adapter.send("6281234567890@c.us", "# Big\n\nBody **bold**."))
+        result = asyncio.run(adapter.send("6281234567890@s.whatsapp.net", "# Big\n\nBody **bold**."))
         assert result.success
         method, path, payload = captured[0]
         assert method == "POST" and path == "/api/sendText"
         assert payload["session"] == "test-session"
+        # canonical @s.whatsapp.net input renders to the WAHA wire dialect (@c.us)
         assert payload["chatId"] == "6281234567890@c.us"
         assert payload["text"] == "𝐁𝐢𝐠\n\nBody *bold*."
 
     def test_send_chunks_over_the_cap(self):
         adapter, captured = self._capture_adapter()
-        result = asyncio.run(adapter.send("6281234567890@c.us", "a " * 40000))
+        result = asyncio.run(adapter.send("6281234567890@s.whatsapp.net", "a " * 40000))
         assert result.success
         assert len(captured) >= 2
         assert result.continuation_message_ids  # surfaced like the bridge adapter
@@ -299,7 +300,7 @@ class TestOutbound:
     def test_edit_uses_chat_message_endpoint(self):
         adapter, captured = self._capture_adapter()
         result = asyncio.run(adapter.edit_message(
-            "6281234567890@c.us", "wamid.in1", "## Edited"))
+            "6281234567890@s.whatsapp.net", "wamid.in1", "## Edited"))
         assert result.success
         method, path, payload = captured[0]
         assert method == "PUT"
@@ -312,25 +313,27 @@ class TestOutbound:
         """sendText ids come from body.key (NOWEB shape) serialized Baileys-style so the
         stream consumer can edit instead of falling back to fresh sends."""
         adapter, captured = self._capture_adapter()
-        result = asyncio.run(adapter.send("6281234567890@c.us", "hello"))
+        result = asyncio.run(adapter.send("6281234567890@s.whatsapp.net", "hello"))
         assert result.success
-        assert result.message_id == "true_6281234567890@s.whatsapp.net_wamid.out1"
+        assert result.message_id == "true_6281234567890@c.us_wamid.out1"
 
     def test_outbound_chat_id_uses_cus_form(self):
-        """WAHA docs: internal @s.whatsapp.net JIDs must be converted to @c.us when used
-        as a chatId; @lid targets pass through; groups unchanged."""
+        """WAHA docs: the wire chatId is the @c.us form — the canonical internal
+        @s.whatsapp.net renders to @c.us; @lid targets pass through; groups unchanged."""
         adapter, captured = self._capture_adapter()
         asyncio.run(adapter.send("6281234567890", "a"))  # bare phone
         assert captured[0][2]["chatId"] == "6281234567890@c.us"
-        asyncio.run(adapter.send("6281234567890@s.whatsapp.net", "b"))
+        asyncio.run(adapter.send("6281234567890@s.whatsapp.net", "b"))  # canonical input
         assert captured[1][2]["chatId"] == "6281234567890@c.us"
+        asyncio.run(adapter.send("6281234567890@c.us", "b2"))  # legacy dialect input
+        assert captured[2][2]["chatId"] == "6281234567890@c.us"
         asyncio.run(adapter.send("231580811403454@lid", "c"))
-        assert captured[2][2]["chatId"] == "231580811403454@lid"
+        assert captured[3][2]["chatId"] == "231580811403454@lid"
         asyncio.run(adapter.send("120363001234567890@g.us", "d"))
-        assert captured[3][2]["chatId"] == "120363001234567890@g.us"
+        assert captured[4][2]["chatId"] == "120363001234567890@g.us"
 
     def test_lid_cache_resolves_dm_without_alt(self):
-        """A LID DM whose alt is absent resolves via a learned pair; canonical @c.us."""
+        """A LID DM whose alt is absent resolves via a learned pair; canonical @s.whatsapp.net."""
         """A LID DM whose alt field is absent resolves via a previously learned pair."""
         adapter = _make_adapter()
         with_alt = _dm_payload()
@@ -340,29 +343,30 @@ class TestOutbound:
                                      "fromMe": False, "id": "A", "participant": "",
                                      "addressingMode": "lid"}}
         data = adapter._map_payload(with_alt)
-        assert data["chatId"] == "6281234567890@c.us"
+        assert data["chatId"] == "6281234567890@s.whatsapp.net"
         without_alt = _dm_payload()
         without_alt["from"] = without_alt["chatId"] = "231580811403454@lid"
         without_alt["_data"] = {"key": {"remoteJid": "231580811403454@lid",
                                         "fromMe": False, "id": "B", "participant": "",
                                         "addressingMode": "lid"}}
         data = adapter._map_payload(without_alt)
-        assert data["chatId"] == "6281234567890@c.us"
+        assert data["chatId"] == "6281234567890@s.whatsapp.net"
 
     def test_edit_accepts_serialized_id_unchanged(self):
         adapter, captured = self._capture_adapter()
         result = asyncio.run(adapter.edit_message(
-            "6281234567890@c.us", "true_6281234567890@s.whatsapp.net_wamid.out1", "edited"))
+            "6281234567890@s.whatsapp.net", "true_6281234567890@c.us_wamid.out1", "edited"))
         assert result.success
         method, path, _ = captured[0]
+        # wire chatId (@c.us) + the serialized id exactly as WAHA issued it
         assert path == ("/api/test-session/chats/6281234567890@c.us/messages/"
-                        "true_6281234567890@s.whatsapp.net_wamid.out1")
+                        "true_6281234567890@c.us_wamid.out1")
 
     def test_media_local_file_sent_as_base64(self, tmp_path):
         adapter, captured = self._capture_adapter()
         img = tmp_path / "pic.png"
         img.write_bytes(b"\x89PNG fake")
-        result = asyncio.run(adapter.send_image_file("6281234567890@c.us", str(img), caption="# Cap"))
+        result = asyncio.run(adapter.send_image_file("6281234567890@s.whatsapp.net", str(img), caption="# Cap"))
         assert result.success
         method, path, payload = captured[0]
         assert path == "/api/sendImage"
@@ -372,25 +376,25 @@ class TestOutbound:
 
     def test_media_remote_url_passthrough(self):
         adapter, captured = self._capture_adapter()
-        result = asyncio.run(adapter.send_image("6281234567890@c.us", "https://cdn.example.com/x.jpg"))
+        result = asyncio.run(adapter.send_image("6281234567890@s.whatsapp.net", "https://cdn.example.com/x.jpg"))
         assert result.success
         _, _, payload = captured[0]
         assert payload["file"] == {"url": "https://cdn.example.com/x.jpg"}
 
     def test_typing_and_receipts(self):
         adapter, captured = self._capture_adapter()
-        asyncio.run(adapter.send_typing("6281234567890@c.us"))
+        asyncio.run(adapter.send_typing("6281234567890@s.whatsapp.net"))
         paths = [p for _, p, _ in captured]
         assert "/api/startTyping" in paths
         # Read receipts default OFF (privacy) — set the flag explicitly.
         adapter._send_read_receipts = True
-        asyncio.run(adapter._send_read_receipt("6281234567890@c.us", "wamid.in1"))
+        asyncio.run(adapter._send_read_receipt("6281234567890@s.whatsapp.net", "wamid.in1"))
         paths = [p for _, p, _ in captured]
         assert "/api/sendSeen" in paths
 
     def test_read_receipts_default_off(self):
         adapter, captured = self._capture_adapter()
-        asyncio.run(adapter._send_read_receipt("6281234567890@c.us", "wamid.in1"))
+        asyncio.run(adapter._send_read_receipt("6281234567890@s.whatsapp.net", "wamid.in1"))
         assert captured == []
 
 
@@ -455,7 +459,7 @@ class TestWebhookHandlerReply:
         assert response.status == 200
         adapter.send.assert_called_once()
         call = adapter.send.call_args
-        assert call.kwargs["chat_id"] == "6281234567890@c.us"
+        assert call.kwargs["chat_id"] == "6281234567890@s.whatsapp.net"
         assert call.kwargs["content"] == "Available commands: /help"
 
     def test_handler_none_sends_nothing(self):
@@ -479,7 +483,7 @@ class TestStandaloneSend:
         session_ctx, calls = _fake_aiohttp()
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("aiohttp.ClientSession", lambda *a, **kw: session_ctx)
-            res = asyncio.run(_standalone_send(_pconfig(), "6281234567890@c.us", "# Big\n\nBody **bold**."))
+            res = asyncio.run(_standalone_send(_pconfig(), "6281234567890@s.whatsapp.net", "# Big\n\nBody **bold**."))
         assert res["success"] is True
         assert calls[0][0].endswith("/api/sendText")
         assert calls[0][1]["text"] == "𝐁𝐢𝐠\n\nBody *bold*."

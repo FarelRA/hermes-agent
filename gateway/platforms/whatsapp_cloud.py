@@ -41,6 +41,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.whatsapp_identity import canonical_phone_jid, to_engine_chat_id
 from gateway.platforms.whatsapp_common import _OPTIN_TRUTHY, WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
@@ -238,7 +239,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Allowlist check against the normalized bare wa_id."""
+        """Allowlist check against the normalized bare wa_id.  The stored canonical id
+        is ``@s.whatsapp.net``; both sides fold to bare digits so any dialect in the
+        config matches."""
         if self._dm_policy == "allowlist":
             bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
             return (bare or sender_id) in self._normalize_allow_ids(self._live_dm_allow_from())
@@ -339,8 +342,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _outbound_payload(chat_id: str, kind: str, block: Any, reply_to: Optional[str]) -> Dict[str, Any]:
-        """Common ``/messages`` envelope; ``context`` quotes ``reply_to`` when given."""
-        payload: Dict[str, Any] = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": chat_id, "type": kind, kind: block}
+        """Common ``/messages`` envelope; ``context`` quotes ``reply_to`` when given.
+
+        The wire dialect is Meta's bare ``wa_id`` — the canonical internal id renders
+        here once, so every send path (text, media, interactive, template) speaks it."""
+        payload: Dict[str, Any] = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to_engine_chat_id(chat_id, "cloud"), "type": kind, kind: block}
         if reply_to:
             payload["context"] = {"message_id": reply_to}
         return payload
@@ -970,8 +976,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         extract = _BODY_BY_KIND.get(msg_type_str)
         body = str(extract(raw_message) or "") if extract else ""
-        chat_id = sender_id = str(raw_message.get("from") or "").strip()
-        sender_name = contacts_by_waid.get(sender_id, "")
+        raw_wa_id = str(raw_message.get("from") or "").strip()
+        chat_id = sender_id = canonical_phone_jid(raw_wa_id)
+        # The contacts roster is keyed by Meta's bare wa_id — look up BEFORE the
+        # canonical form replaces the wire id.
+        sender_name = contacts_by_waid.get(raw_wa_id, "")
         # DMs only: chat_id == sender wa_id. A ``chat`` field marks a group-shaped
         # payload (capability-gated by Meta) — refuse rather than treat as a DM.
         if raw_message.get("chat"):

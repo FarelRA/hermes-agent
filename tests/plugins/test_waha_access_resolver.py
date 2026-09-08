@@ -20,7 +20,7 @@ class _StubWaha(WahaAdapter):
         super().__init__(PlatformConfig(enabled=True, extra=extra))
         self._groups = groups
         self._participants = participants
-        self._bot_ids = {"6287784454555@c.us"}
+        self._bot_ids = {"6287784454555@s.whatsapp.net"}
 
     async def _request(self, method, path, payload=None, timeout=30):  # noqa: ARG002
         if "/groups/" in path and path.endswith("/participants"):
@@ -81,7 +81,7 @@ async def test_group_jid_passes_through():
 @pytest.mark.asyncio
 async def test_user_by_pushname_resolves_to_phone_jid():
     res = await _adapter().resolve_access_ref("@Niken", scope="user")
-    assert res.canonical == "6289682642242@c.us"
+    assert res.canonical == "6289682642242@s.whatsapp.net"
     assert res.label == "Niken"
 
 
@@ -94,8 +94,8 @@ async def test_user_pushname_not_found_is_an_empty_resolution():
 
 @pytest.mark.asyncio
 async def test_user_jid_passes_through_and_lids_resolve():
-    assert (await _adapter().resolve_access_ref("6289603167061@c.us", scope="user")).canonical \
-        == "6289603167061@c.us"
+    assert (await _adapter().resolve_access_ref("6289603167061@s.whatsapp.net", scope="user")).canonical \
+        == "6289603167061@s.whatsapp.net"
 
 
 @pytest.mark.asyncio
@@ -115,8 +115,24 @@ async def test_real_mixin_normalizes_local_phone():
     """The production path: WhatsAppBehaviorMixin._access_phone_jid normalizes local
     formats against the bot's own country code (no resolver needed for phones)."""
     adapter = _adapter()
-    adapter._bot_ids = {"6287784454555@c.us"}
-    assert adapter._access_phone_jid("089682642242") == "6289682642242@c.us"
-    assert adapter._access_phone_jid("+1 555 123 4567") == "15551234567@c.us"
-    assert adapter._access_phone_jid("6289603167061") == "6289603167061@c.us"
+    adapter._bot_ids = {"6287784454555@s.whatsapp.net"}
+    assert adapter._access_phone_jid("089682642242") == "6289682642242@s.whatsapp.net"
+    assert adapter._access_phone_jid("+1 555 123 4567") == "15551234567@s.whatsapp.net"
+    assert adapter._access_phone_jid("6289603167061") == "6289603167061@s.whatsapp.net"
     assert adapter._access_phone_jid("abc") == ""
+
+
+def test_sender_id_canonicalized_to_cus():
+    """A phone-addressed DM (``@s.whatsapp.net`` sender) must land as ``@c.us`` — the
+    slash-access admin comparison is an exact string match against @c.us lists."""
+    adapter = _adapter()
+    payload = {
+        "id": "false_6285157813352@s.whatsapp.net_X",
+        "from": "6285157813352@s.whatsapp.net",
+        "chatId": "6285157813352@s.whatsapp.net",
+        "fromMe": False,
+        "body": "hi",
+    }
+    data = adapter._map_payload(payload)
+    assert data["senderId"] == "6285157813352@s.whatsapp.net"
+    assert data["chatId"] == "6285157813352@s.whatsapp.net"

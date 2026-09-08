@@ -435,7 +435,7 @@ class TestWebhookDispatch:
             "wamid.HBgLMTM1NTc4MjU2OTgVAGHAYWYET688aASGNTI1QzZFQjhEMDk2QQA="
         )
         assert event.source.platform == Platform.WHATSAPP_CLOUD
-        assert event.source.chat_id == "13557825698"
+        assert event.source.chat_id == "13557825698@s.whatsapp.net"  # canonical internal form
         assert event.source.user_name == "Jessica Laverdetman"
         assert event.source.chat_type == "dm"
 
@@ -1286,7 +1286,7 @@ class TestInboundWamidCache:
             raw, {"15551234567": "Alice"}, {}
         )
         assert event is not None
-        assert adapter._last_inbound_wamid_by_chat["15551234567"] == "wamid.AAA"
+        assert adapter._last_inbound_wamid_by_chat["15551234567@s.whatsapp.net"] == "wamid.AAA"
 
 
 class TestSendTyping:

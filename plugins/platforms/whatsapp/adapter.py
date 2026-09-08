@@ -171,7 +171,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.whatsapp_identity import canonical_phone_jid, to_engine_chat_id
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
@@ -571,7 +571,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        chat_id = to_whatsapp_jid(chat_id)
+        chat_id = to_engine_chat_id(chat_id, "baileys")
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
             sent_message_ids: list[str] = []
@@ -605,7 +605,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         (legacy fallback inside), so delivery can't break.
         """
         try:
-            async with self._bridge_req("post", "edit", 15, json={"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "message": self.format_message(content)}) as resp:
+            async with self._bridge_req("post", "edit", 15, json={"chatId": to_engine_chat_id(chat_id, "baileys"), "messageId": message_id, "message": self.format_message(content)}) as resp:
                 if resp.status != 200:
                     return SendResult(success=False, error=await resp.text())
                 data = await resp.json()
@@ -632,14 +632,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
-        payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "filePath": file_path, "mediaType": media_type}
+        payload: Dict[str, Any] = {"chatId": to_engine_chat_id(chat_id, "baileys"), "filePath": file_path, "mediaType": media_type}
         payload.update({k: v for k, v in (("caption", self.format_message(caption) if caption else None), ("fileName", file_name)) if v})
         return await self._post_bridge_message("send-media", payload, timeout=120)
 
     @_needs_bridge
     async def send_poll(self, chat_id: str, question: str, options: list[str], *, selectable_count: int = 1) -> SendResult:
         """Native WhatsApp poll (low-level transport primitive; approval UX stays gateway-owned)."""
-        payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "question": question, "options": list(options or []), "selectableCount": selectable_count}
+        payload: Dict[str, Any] = {"chatId": to_engine_chat_id(chat_id, "baileys"), "question": question, "options": list(options or []), "selectableCount": selectable_count}
         return await self._post_bridge_message("send-poll", payload, timeout=30)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
@@ -657,7 +657,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_location(self, chat_id: str, latitude: float, longitude: float, *, name: Optional[str] = None, address: Optional[str] = None,
                             reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         try:
-            payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "latitude": float(latitude), "longitude": float(longitude)}
+            payload: Dict[str, Any] = {"chatId": to_engine_chat_id(chat_id, "baileys"), "latitude": float(latitude), "longitude": float(longitude)}
         except Exception as e:
             return SendResult(success=False, error=str(e))
         payload.update({k: v for k, v in (("name", name), ("address", address)) if v})
@@ -691,7 +691,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         with suppress(Exception):
             import aiohttp
             # ``async with`` — a bare ``await session.post(...)`` leaves the response (and its CLOSE_WAIT socket) alive until GC.
-            async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id)}, timeout=aiohttp.ClientTimeout(total=5)):
+            async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_engine_chat_id(chat_id, "baileys")}, timeout=aiohttp.ClientTimeout(total=5)):
                 pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -699,7 +699,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return {"name": "Unknown", "type": "dm"}
         if not await self._check_managed_bridge_exit():
             try:
-                async with self._bridge_req("get", f"chat/{to_whatsapp_jid(chat_id)}", 10) as resp:
+                async with self._bridge_req("get", f"chat/{to_engine_chat_id(chat_id, 'baileys')}", 10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return {"name": data.get("name", chat_id), "type": "group" if data.get("isGroup") else "dm", "participants": data.get("participants", [])}
@@ -847,8 +847,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     await self._observe_bridge_group_message(data)
                 return None
             msg_type = self._classify_bridge_message(data)
-            source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
-                                       user_id=data.get("senderId"), user_name=data.get("senderName"))
+            # Inbound boundary: the bridge speaks @s.whatsapp.net natively, but accept
+            # any dialect (@c.us, bare digits) and store the one canonical form.
+            source = self.build_source(chat_id=canonical_phone_jid(data.get("chatId", "")), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
+                                       user_id=canonical_phone_jid(data.get("senderId")), user_name=data.get("senderName"))
             cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
             body = data.get("body", "")
             if data.get("isGroup"):
@@ -906,7 +908,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
-        normalized_chat_id = to_whatsapp_jid(chat_id)
+        normalized_chat_id = to_engine_chat_id(chat_id, "baileys")
         media = media_files or []
         # Apply the same markdown→WhatsApp conversion the in-gateway send()
         # applies. Cron deliveries run in a separate process and bypass

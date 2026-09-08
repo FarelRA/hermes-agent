@@ -32,6 +32,91 @@ def normalize_whatsapp_identifier(value: str) -> str:
     return str(value or "").strip().replace("+", "", 1).split(":", 1)[0].split("@", 1)[0]
 
 
+def canonical_phone_jid(jid: str) -> str:
+    """One canonical form for phone-addressed WhatsApp identities: ``@s.whatsapp.net``.
+
+    The three WhatsApp transports speak different wire dialects — the Baileys bridge
+    uses ``@s.whatsapp.net`` natively, WAHA/NOWEB documents ``@c.us``, Cloud API uses
+    bare ``wa_id`` digits — and allowlists, admin lists and session keys must compare
+    equal for the same human.  Each adapter normalizes its inbound wire form to this
+    canonical form at the boundary (``_map_payload`` / ``_build_message_event``) and
+    renders it back to the engine's dialect on the way out via :func:`to_engine_chat_id`.
+    ``@c.us`` and bare digits become ``@s.whatsapp.net``; ``@s.whatsapp.net``, ``@g.us``,
+    ``@lid``, broadcasts and anything already suffixed pass through unchanged (LID
+    resolution needs the adapter's alt/cache and happens before this call)."""
+    value = str(jid or "").strip()
+    if not value:
+        return ""
+    if "@" in value:
+        local, _, domain = value.partition("@")
+        if domain == "c.us":
+            return f"{local}@s.whatsapp.net"
+        return value
+    if _BARE_PHONE_RE.fullmatch(value):
+        digits = re.sub(r"\D+", "", value)
+        if digits:
+            return f"{digits}@s.whatsapp.net"
+    return value
+
+
+def to_engine_chat_id(chat_id: str, engine: str) -> str:
+    """Render the canonical internal id into the dialect *engine* expects on its wire.
+
+    ``"waha"`` wants ``@c.us`` (WAHA docs are explicit); ``"cloud"`` wants bare
+    ``wa_id`` digits; ``"baileys"`` and unknown engines get the canonical
+    ``@s.whatsapp.net`` unchanged — every dialect change is additive at the boundary,
+    so a new transport only adds a branch here."""
+    value = canonical_phone_jid(chat_id)
+    engine = str(engine or "").strip().lower()
+    if engine == "waha" and value.endswith("@s.whatsapp.net"):
+        return value.split("@", 1)[0] + "@c.us"
+    if engine == "cloud" and "@" in value:
+        return value.split("@", 1)[0]
+    return value
+
+
+def canonicalize_id_list(entries, default_cc: str = "") -> list:
+    """Canonicalize every entry of a config/env/API allowlist (allow_from,
+    group_allow_from, allow_admin_from, user_allowed_commands payloads…) into the
+    internal standard, accepting every shape an operator might write:
+
+    - bare digits in any phone format (``0812…``, ``+62 812…``, ``(555) 123-4567``)
+    - any JID dialect (``@c.us``, ``@s.whatsapp.net``, ``@g.us``, ``@lid``)
+    - group JIDs, broadcasts, LIDs (unchanged — resolution is adapter-side)
+
+    Group ids and non-phone entries pass through :func:`canonical_phone_jid` too, so
+    one call covers both user and group lists; ``"*"`` and blank entries are preserved
+    / dropped respectively.  *default_cc* (the bot's own country code) lets national
+    trunk formats like ``0812…`` resolve; without it they are suffixed as-is and the
+    adapter re-normalizes with its own country at init.  Returns a list (YAML
+    round-trip friendly); input order is kept and duplicates collapse."""
+    if entries is None:
+        return []
+    if isinstance(entries, str):
+        items = [part for part in (p.strip() for p in entries.split(",")) if part]
+    elif isinstance(entries, (list, tuple, set, frozenset)):
+        items = [str(item).strip() for item in entries]
+    else:
+        items = [str(entries).strip()]
+    out: list = []
+    for item in items:
+        if not item or item == "*":
+            if item == "*" and "*" not in out:
+                out.append(item)
+            continue
+        if re.fullmatch(r"\+?[\d\s().\-]{7,}", item) and "@" not in item:
+            # Phone-shaped: normalize through the full path (trunk digits, dial-out
+            # prefixes) when the home country is known; otherwise the plain canonical
+            # form applies and the adapter re-normalizes with its own country.
+            e164 = normalize_phone_e164(item, default_cc)
+            canonical = f"{e164}@s.whatsapp.net" if e164 else canonical_phone_jid(item)
+        else:
+            canonical = canonical_phone_jid(item)
+        if canonical and canonical not in out:
+            out.append(canonical)
+    return out
+
+
 def to_whatsapp_jid(value: str) -> str:
     """Normalize an *outbound* target to a bridge-safe JID (inverse of normalize).  Baileys'
     ``jidDecode`` crashes on a bare phone, so bare phones become ``<digits>@s.whatsapp.net``;

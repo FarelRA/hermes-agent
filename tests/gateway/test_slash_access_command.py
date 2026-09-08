@@ -20,11 +20,11 @@ from gateway.slash_commands_access import AccessResolution, GatewayAccessCommand
 
 
 class _Source:
-    def __init__(self, platform: str = "waha", chat_id: str = "6281@c.us"):
+    def __init__(self, platform: str = "waha", chat_id: str = "6281@s.whatsapp.net"):
         from gateway.config import Platform
         self.platform = Platform(platform)
         self.chat_id = chat_id
-        self.user_id = "6285157813352@c.us"
+        self.user_id = "6285157813352@s.whatsapp.net"
 
 
 class _Event:
@@ -83,7 +83,7 @@ def homes(tmp_path, monkeypatch):
     (home / "config.yaml").write_text(yaml.safe_dump({
         "platforms": {"waha": {
             "enabled": True, "dm_policy": "allowlist",
-            "allow_from": ["6285157813352@c.us"],
+            "allow_from": ["6285157813352@s.whatsapp.net"],
             "group_allow_from": ["120363427512131387@g.us"],
         }},
     }))
@@ -112,17 +112,17 @@ async def test_generic_resolve_strips_discord_mention_wrapper(homes):
 @pytest.mark.asyncio
 async def test_generic_resolve_uses_event_mention_metadata(homes):
     runner = _Runner({"waha": _FakeAdapter({})})
-    event = _Event("", metadata={"mentions": [{"id": "6289682642242@c.us", "label": "Niken"}]})
+    event = _Event("", metadata={"mentions": [{"id": "6289682642242@s.whatsapp.net", "label": "Niken"}]})
     res = await runner._access_resolve(runner.adapters[Platform("waha")], event, "user", "@Niken")
-    assert res.canonical == "6289682642242@c.us"
+    assert res.canonical == "6289682642242@s.whatsapp.net"
 
 
 @pytest.mark.asyncio
 async def test_generic_resolve_reply_keyword_uses_reply_author(homes):
     runner = _Runner({"waha": _FakeAdapter({})})
-    event = _Event("", reply_to_author_id="6289603167061@c.us")
+    event = _Event("", reply_to_author_id="6289603167061@s.whatsapp.net")
     res = await runner._access_resolve(runner.adapters[Platform("waha")], event, "user", "reply")
-    assert res.canonical == "6289603167061@c.us"
+    assert res.canonical == "6289603167061@s.whatsapp.net"
 
 
 @pytest.mark.asyncio
@@ -139,26 +139,26 @@ async def test_generic_resolve_passes_through_raw_ids(homes):
 
 @pytest.mark.asyncio
 async def test_allow_user_adds_to_live_set_and_config(homes):
-    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@c.us"]})
+    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@s.whatsapp.net"]})
     runner = _Runner({"waha": adapter})
     reply = await runner._handle_access_command(_Event("allow user 089682642242"))
     assert "✅" in reply
-    assert "6289682642242@c.us" in adapter._allow_from
+    assert "6289682642242@s.whatsapp.net" in adapter._allow_from
     block = _config_yaml(homes)["platforms"]["waha"]
-    assert "6289682642242@c.us" in block["allow_from"]
+    assert "6289682642242@s.whatsapp.net" in block["allow_from"]
     # The bridged extra (what the authz union reads) is updated too.
-    assert "6289682642242@c.us" in adapter.config.extra["allow_from"]
+    assert "6289682642242@s.whatsapp.net" in adapter.config.extra["allow_from"]
 
 
 @pytest.mark.asyncio
 async def test_deny_user_removes_from_both_layers(homes):
-    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@c.us", "6289603167061@c.us"]})
+    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@s.whatsapp.net", "6289603167061@s.whatsapp.net"]})
     runner = _Runner({"waha": adapter})
-    reply = await runner._handle_access_command(_Event("deny user 6289603167061@c.us"))
+    reply = await runner._handle_access_command(_Event("deny user 6289603167061@s.whatsapp.net"))
     assert "no longer allowed" in reply
-    assert "6289603167061@c.us" not in adapter._allow_from
-    assert "6289603167061@c.us" not in _config_yaml(homes)["platforms"]["waha"]["allow_from"]
-    assert "6285157813352@c.us" in adapter._allow_from  # untouched
+    assert "6289603167061@s.whatsapp.net" not in adapter._allow_from
+    assert "6289603167061@s.whatsapp.net" not in _config_yaml(homes)["platforms"]["waha"]["allow_from"]
+    assert "6285157813352@s.whatsapp.net" in adapter._allow_from  # untouched
 
 
 @pytest.mark.asyncio
@@ -175,11 +175,11 @@ async def test_allow_group_and_deny_group_are_symmetric(homes):
 
 @pytest.mark.asyncio
 async def test_allow_is_idempotent_and_deny_missing_is_a_noop(homes):
-    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@c.us"]})
+    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@s.whatsapp.net"]})
     runner = _Runner({"waha": adapter})
-    reply = await runner._handle_access_command(_Event("allow user 6285157813352@c.us"))
+    reply = await runner._handle_access_command(_Event("allow user 6285157813352@s.whatsapp.net"))
     assert "already" in reply
-    reply = await runner._handle_access_command(_Event("deny user 6289999999999@c.us"))
+    reply = await runner._handle_access_command(_Event("deny user 6289999999999@s.whatsapp.net"))
     assert "was not" in reply
     assert len(adapter._allow_from) == 1
 
@@ -189,7 +189,7 @@ async def test_loose_membership_matches_jid_variants_of_same_number(homes):
     # The same human stored as @s.whatsapp.net must not be re-added as @c.us.
     adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@s.whatsapp.net"]})
     runner = _Runner({"waha": adapter})
-    reply = await runner._handle_access_command(_Event("allow user 6285157813352@c.us"))
+    reply = await runner._handle_access_command(_Event("allow user 6285157813352@s.whatsapp.net"))
     assert "already" in reply
     assert adapter._allow_from == {"6285157813352@s.whatsapp.net"}
 
@@ -204,18 +204,18 @@ async def test_persist_writes_routed_profile_not_default(tmp_path, monkeypatch):
     routed_home.mkdir(parents=True)
     (default_home / "config.yaml").write_text("platforms: {}\n")
     (routed_home / "config.yaml").write_text(yaml.safe_dump(
-        {"platforms": {"waha": {"allow_from": ["6285157813352@c.us"]}}}))
+        {"platforms": {"waha": {"allow_from": ["6285157813352@s.whatsapp.net"]}}}))
     monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
 
     from gateway.run import _profile_runtime_scope
 
-    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@c.us"]})
+    adapter = _FakeWhatsAppAdapter({"allow_from": ["6285157813352@s.whatsapp.net"]})
     runner = _Runner({"waha": adapter})
     with _profile_runtime_scope(routed_home):
-        await runner._handle_access_command(_Event("allow user 6289603167061@c.us"))
+        await runner._handle_access_command(_Event("allow user 6289603167061@s.whatsapp.net"))
 
-    assert "6289603167061@c.us" in _config_yaml(routed_home)["platforms"]["waha"]["allow_from"]
+    assert "6289603167061@s.whatsapp.net" in _config_yaml(routed_home)["platforms"]["waha"]["allow_from"]
     assert _config_yaml(default_home)["platforms"] == {}
 
 
@@ -235,14 +235,14 @@ async def test_bad_usage_returns_help(homes):
 @pytest.mark.asyncio
 async def test_list_renders_policies_and_counts(homes):
     adapter = _FakeWhatsAppAdapter({
-        "allow_from": ["6285157813352@c.us"],
+        "allow_from": ["6285157813352@s.whatsapp.net"],
         "group_allow_from": ["120363427512131387@g.us"],
         "dm_policy": "allowlist", "group_policy": "allowlist",
     })
     runner = _Runner({"waha": adapter})
     reply = await runner._handle_access_command(_Event("list"))
     assert "DM policy: *allowlist*" in reply
-    assert "6285157813352@c.us" in reply
+    assert "6285157813352@s.whatsapp.net" in reply
     assert "120363427512131387@g.us" in reply
 
 
@@ -259,7 +259,7 @@ class _WahaLikeAdapter(_FakeWhatsAppAdapter):
     def __init__(self, extra, groups):
         super().__init__(extra)
         self._groups = groups
-        self._bot_ids = {"6287784454555@c.us"}
+        self._bot_ids = {"6287784454555@s.whatsapp.net"}
 
     async def resolve_access_ref(self, ref, *, scope="user", event=None):
         from gateway.whatsapp_identity import normalize_phone_e164
@@ -273,7 +273,7 @@ class _WahaLikeAdapter(_FakeWhatsAppAdapter):
         digits = "".join(c for c in text if c.isdigit())
         if digits and text[0].isnumeric():
             e164 = normalize_phone_e164(text, "62")
-            return AccessResolution(canonical=f"{e164}@c.us") if e164 else AccessResolution()
+            return AccessResolution(canonical=f"{e164}@s.whatsapp.net") if e164 else AccessResolution()
         return None
 
 
@@ -283,7 +283,7 @@ async def test_waha_style_resolver_normalizes_local_phone(homes):
     adapter = _WahaLikeAdapter({"allow_from": []}, groups)
     runner = _Runner({"waha": adapter})
     reply = await runner._handle_access_command(_Event("allow user 089682642242"))
-    assert "6289682642242@c.us" in adapter._allow_from
+    assert "6289682642242@s.whatsapp.net" in adapter._allow_from
     assert "✅" in reply
 
 

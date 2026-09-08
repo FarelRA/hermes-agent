@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
+from gateway.whatsapp_identity import canonical_phone_jid, to_engine_chat_id
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import to_whatsapp_jid
@@ -31,17 +32,15 @@ logger = logging.getLogger(__name__)
 
 
 def _waha_chat_id(chat_id: str) -> str:
-    """Outbound chatId in the form WAHA/NOWEB documents (see waha.devlike.pro chat-ids).
+    """Outbound chatId in the dialect WAHA/NOWEB documents (see waha.devlike.pro chat-ids).
 
-    ``gateway.whatsapp_identity.to_whatsapp_jid`` renders bare phones as
-    ``<digits>@s.whatsapp.net`` (Baileys-bridge form); the WAHA docs are explicit that
-    internal ``@s.whatsapp.net`` JIDs must be converted to ``@c.us`` when used as a
-    ``chatId``. ``@lid`` targets are passed through unchanged (WAHA accepts them and
-    routes by the hidden id); groups/broadcasts/newsletters are returned as-is."""
-    jid = to_whatsapp_jid(chat_id)
-    if jid.endswith("@s.whatsapp.net"):
-        jid = jid.split("@", 1)[0] + "@c.us"
-    return jid
+    The canonical internal id is ``@s.whatsapp.net``; WAHA's docs are explicit that its
+    ``chatId`` is the ``@c.us`` form, so the render happens here at the wire boundary.
+    ``@lid`` targets are passed through unchanged (WAHA accepts them and routes by the
+    hidden id); groups/broadcasts/newsletters are returned as-is. Equivalent to
+    ``to_engine_chat_id(chat_id, "waha")`` kept as a local helper because every send
+    path calls it directly."""
+    return to_engine_chat_id(chat_id, "waha")
 
 
 AIOHTTP_AVAILABLE = True
@@ -186,7 +185,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         me = (body or {}).get("me") or {}
         if isinstance(me, dict) and (me.get("id") or me.get("lid")):
-            self._bot_ids = {str(v) for v in (me.get("id"), me.get("lid")) if v}
+            self._bot_ids = {canonical_phone_jid(str(v)) for v in (me.get("id"), me.get("lid")) if v}
         self._running = True
         await self._start_webhook_receiver()
         self._wire_plugin_handlers()
@@ -251,7 +250,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if isinstance(me, dict) and (me.get("id") or me.get("lid")):
             # Both forms: lid-addressed groups quote/mention the bot by LID while
             # me.id is the phone JID — the reply/mention gates must match either.
-            self._bot_ids = {str(v) for v in (me.get("id"), me.get("lid")) if v}
+            self._bot_ids = {canonical_phone_jid(str(v)) for v in (me.get("id"), me.get("lid")) if v}
         if payload.get("fromMe"):
             return web.Response(status=200)  # bot mode: own messages are echoes
         try:
@@ -268,38 +267,37 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return web.Response(status=200)
 
     def _lid_alt_jid(self, payload: Dict[str, Any]) -> str:
-        """Phone JID for a LID-addressed message (``addressingMode: "lid"``).
+        """Canonical phone JID for a LID-addressed message (``addressingMode: "lid"``).
 
         WhatsApp increasingly delivers DMs keyed by a privacy LID (``<n>@lid``);
         NOWEB exposes the phone form alongside it as ``_data.key.remoteJidAlt``
-        (``<n>@s.whatsapp.net``). Allowlists hold phone JIDs, so prefer the alt
-        whenever the primary id is a LID. Every resolved pair is remembered in
-        ``_lid_pn_cache`` for LIDs that later arrive without an alt field."""
+        (``<n>@s.whatsapp.net``) — which IS the internal canonical form, so the alt is
+        used as-is and every resolved pair is remembered in ``_lid_pn_cache`` for LIDs
+        that later arrive without an alt field."""
         data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
         key = data.get("key") if isinstance(data.get("key"), dict) else {}
         alt = str(key.get("remoteJidAlt") or "")
         primary = str(key.get("remoteJid") or payload.get("from") or "")
         if alt and primary.endswith("@lid"):
-            # Canonical phone form is @c.us (docs: don't use @s.whatsapp.net as chatId)
-            alt_cus = alt.split("@", 1)[0] + "@c.us"
-            self._lid_pn_cache[primary] = alt_cus
-            return alt_cus
+            self._lid_pn_cache[primary] = alt
+            return alt
         return ""
 
     @staticmethod
     def _participant_alt_jid(payload: Dict[str, Any]) -> str:
-        """Phone JID (@c.us) for a LID-addressed group sender (``key.participantAlt``)."""
+        """Canonical phone JID for a LID-addressed group sender (``key.participantAlt``)."""
         data = payload.get("_data") if isinstance(payload.get("_data"), dict) else {}
         key = data.get("key") if isinstance(data.get("key"), dict) else {}
         alt = str(key.get("participantAlt") or "")
         participant = str(key.get("participant") or payload.get("participant") or "")
         if alt and participant.endswith("@lid"):
-            return alt.split("@", 1)[0] + "@c.us"
+            return alt
         return ""
 
     def _resolve_lid(self, lid: str) -> str:
-        """Best-effort phone JID for a bare LID: learned cache first, else the LID
-        unchanged (WAHA accepts ``@lid`` chatIds; the Lids API needs the NOWEB store)."""
+        """Best-effort canonical phone JID for a bare LID: learned cache first, else the
+        LID unchanged (WAHA accepts ``@lid`` chatIds; the Lids API needs the NOWEB
+        store)."""
         if not lid.endswith("@lid"):
             return lid
         return self._lid_pn_cache.get(lid, lid)
@@ -370,7 +368,8 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return AccessResolution(candidates=tuple(matches[:8]))
             return AccessResolution()
         if "@" in text:
-            return AccessResolution(canonical=self._resolve_lid(text) if text.endswith("@lid") else text)
+            resolved = self._resolve_lid(text) if text.endswith("@lid") else text
+            return AccessResolution(canonical=canonical_phone_jid(resolved))
         return None  # not WhatsApp-shaped at all; generic fallback normalizes phones
 
     async def _access_contacts(self, chat_id: str) -> list:
@@ -388,8 +387,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             for p in participants:
                 if not isinstance(p, dict):
                     continue
-                jid = str(p.get("phoneNumber") or p.get("id") or "")
-                jid = jid.split("@", 1)[0] + "@c.us" if "@" in jid else jid
+                jid = canonical_phone_jid(str(p.get("phoneNumber") or p.get("id") or ""))
                 if jid:
                     contacts.append((jid, str(p.get("name") or p.get("pushName") or "")))
             return contacts
@@ -403,7 +401,12 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return contacts
 
     def _map_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """WAHA webhook payload → the bridge-shaped dict the shared mixin gates on."""
+        """WAHA webhook payload → the bridge-shaped dict the shared mixin gates on.
+
+        Identity normalization happens HERE, once: every id the rest of the gateway
+        sees (chatId, senderId, quotedParticipant, mentionedIds, botIds) is in the one
+        canonical form (``@s.whatsapp.net``) regardless of the wire dialect WAHA
+        delivered.  LIDs resolve through alt fields / the learned cache first."""
         chat_id = str(payload.get("chatId") or payload.get("from") or "")
         alt_jid = self._lid_alt_jid(payload)
         if chat_id.endswith("@lid"):
@@ -413,7 +416,7 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if sender_id.endswith("@lid"):
             participant_alt = self._participant_alt_jid(payload)
             if participant_alt:
-                self._lid_pn_cache[sender_id] = participant_alt.split("@", 1)[0] + "@c.us"
+                self._lid_pn_cache[sender_id] = participant_alt
                 sender_id = participant_alt
             else:
                 sender_id = alt_jid or self._resolve_lid(sender_id)
@@ -421,9 +424,9 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         media = payload.get("media") if isinstance(payload.get("media"), dict) else {}
         reply_to = payload.get("replyTo") if isinstance(payload.get("replyTo"), dict) else {}
         return {
-            "chatId": chat_id,
+            "chatId": canonical_phone_jid(chat_id),
             "chatName": payload.get("chatName") or chat_id,
-            "senderId": sender_id,
+            "senderId": canonical_phone_jid(sender_id),
             "senderName": sender.get("pushName") or payload.get("pushname") or "",
             "isGroup": is_group,
             "body": str(payload.get("body") or ""),
@@ -432,10 +435,10 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 float(payload.get("timestamp") or 0) or datetime.now(timezone.utc).timestamp(),
                 tz=timezone.utc).isoformat(),
             "botIds": sorted(self._bot_ids),
-            "mentionedIds": _mentioned_ids_from_data(payload),
+            "mentionedIds": [canonical_phone_jid(self._resolve_lid(mid)) for mid in _mentioned_ids_from_data(payload)],
             "hasQuotedMessage": bool(reply_to),
             "quotedMessageId": str(reply_to.get("id") or "") or None,
-            "quotedParticipant": str(reply_to.get("participant") or "") or None,
+            "quotedParticipant": canonical_phone_jid(str(reply_to.get("participant") or "")) or None,
             "quotedText": str(reply_to.get("body") or "") or None,
             "hasMedia": bool(payload.get("hasMedia")),
             "mediaUrls": [media["url"]] if media.get("url") else [],
