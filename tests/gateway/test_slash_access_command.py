@@ -398,3 +398,22 @@ def test_concurrent_access_edits_keep_both_entries(homes, monkeypatch):
     block = _config_yaml(homes)["platforms"]["waha"]
     assert "6289682642242@s.whatsapp.net" in block["allow_from"]
     assert "6289682642243@s.whatsapp.net" in block["allow_from"]
+
+
+@pytest.mark.asyncio
+async def test_access_merges_twin_config_blocks(homes):
+    # The loader reads top-level <name>: over platforms.<name>; /access must
+    # write the winner and fold the loser in, never diverge the two.
+    import yaml as _yaml
+
+    cfg = _config_yaml(homes)
+    cfg["waha"] = {"allow_from": ["6281111111111@s.whatsapp.net"]}
+    (homes / "config.yaml").write_text(_yaml.safe_dump(cfg))
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow user 089682642242"))
+    assert "✅" in reply
+    fresh = _config_yaml(homes)
+    assert "6289682642242@s.whatsapp.net" in fresh["waha"]["allow_from"]
+    assert "6281111111111@s.whatsapp.net" in fresh["waha"]["allow_from"]
+    assert "allow_from" not in fresh["platforms"]["waha"]

@@ -336,13 +336,32 @@ class GatewayAccessCommandsMixin:
 
     @staticmethod
     def _access_platform_block(raw: dict, platform_name: str) -> dict:
-        """The platform's YAML block, written where it already lives (top-level
-        ``<name>:`` or ``platforms.<name>:``) so the shared-key bridge keeps finding it."""
+        """The platform's YAML block — the same one the loader reads.
+
+        `platform_section` (gateway/config_loader.py) gives a top-level
+        `<name>:` block precedence over `platforms.<name>`; writing anywhere
+        else would be silently ignored on restart. When both blocks carry
+        allowlists, union them into the winner and drop the loser's keys so
+        the two locations can never diverge.
+        """
+        top = raw.get(platform_name)
+        top = top if isinstance(top, dict) else None
         platforms = raw.get("platforms")
+        nested = None
         if isinstance(platforms, dict) and isinstance(platforms.get(platform_name), dict):
-            return platforms[platform_name]
-        if isinstance(raw.get(platform_name), dict):
-            return raw[platform_name]
+            nested = platforms[platform_name]
+        if top is not None and nested is not None:
+            for key in ("allow_from", "group_allow_from"):
+                union = [str(i) for i in (top.get(key) or [])]
+                union += [str(i) for i in (nested.get(key) or []) if str(i) not in union]
+                if union:
+                    top[key] = sorted(set(union))
+                nested.pop(key, None)
+            return top
+        if top is not None:
+            return top
+        if nested is not None:
+            return nested
         if not isinstance(platforms, dict):
             platforms = raw["platforms"] = {}
         block = {}
