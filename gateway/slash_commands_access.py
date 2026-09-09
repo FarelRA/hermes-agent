@@ -303,7 +303,33 @@ class GatewayAccessCommandsMixin:
             block[key] = sorted(updated)
             atomic_config_write(config_path, raw)
             self._access_mutate_live(adapter, scope, updated)
+            self._access_audit(source, scope, canonical, op)
             return True
+
+    @staticmethod
+    def _access_audit(source, scope: str, canonical: str, op: str) -> None:
+        """Append-only audit trail beside the profile config (best-effort —
+        an audit failure must never break the command itself)."""
+        try:
+            import datetime
+            import json
+
+            from gateway.run import _gateway_config_home
+
+            platform = getattr(getattr(source, "platform", None), "value", "?")
+            entry = {
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "actor": getattr(source, "user_id", "?"),
+                "platform": platform,
+                "scope": scope,
+                "op": op,
+                "canonical": canonical,
+            }
+            path = _gateway_config_home() / "access_audit.jsonl"
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except Exception:
+            logger.warning("[access] audit append failed", exc_info=True)
 
     @staticmethod
     def _access_id_in_list(items, canonical: str) -> bool:

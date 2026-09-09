@@ -430,3 +430,19 @@ async def test_access_list_shows_source_and_truncates(homes):
     assert "(source: config)" in reply
     assert "…and 5 more" in reply
     assert "6281000000034@s.whatsapp.net" not in reply
+
+
+@pytest.mark.asyncio
+async def test_access_writes_audit_trail(homes):
+    import json as _json
+
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow user 089682642242"))
+    assert "✅" in reply
+    lines = (homes / "access_audit.jsonl").read_text(encoding="utf-8").strip().split("\n")
+    entry = _json.loads(lines[-1])
+    assert entry["op"] == "allow"
+    assert entry["canonical"] == "6289682642242@s.whatsapp.net"
+    assert entry["scope"] == "user"
+    assert entry["actor"] == "6285157813352@s.whatsapp.net"
