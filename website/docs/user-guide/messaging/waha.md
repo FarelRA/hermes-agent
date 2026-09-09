@@ -84,7 +84,8 @@ appended to `access_audit.jsonl` beside the profile config.
 Two honest refusals instead of silent dead entries: an unresolvable name/number gets
 `Could not resolve …` (nothing is stored — paste the full id), and edits while the
 policy is not `allowlist` get `Stored nothing …` (the list is not consulted, so the
-edit would change nothing).
+edit would change nothing). With no admin list configured at all, `/access` refuses
+everything — fail closed, so strangers can never rewrite the allowlists.
 
 ## Step 2: Register the WAHA webhook
 
