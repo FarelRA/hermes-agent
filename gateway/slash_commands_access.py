@@ -71,6 +71,16 @@ class GatewayAccessCommandsMixin:
     """``/access`` handlers for GatewayRunner (see module docstring for the contract)."""
 
     async def _handle_access_command(self, event) -> str:
+        from gateway.slash_access import policy_for_source
+
+        # Fail closed: without an admin list the central slash gate lets
+        # everyone through, which would let any chatter rewrite the
+        # allowlists (including allowlisting themselves). Same policy object
+        # the dispatch gate used, so the two can never disagree.
+        if not policy_for_source(getattr(self, "config", None), event.source).enabled:
+            return ("`/access` is disabled: no admin list is configured for this scope. "
+                    "Set `allow_admin_from` (DMs) or `group_allow_admin_from` (groups) "
+                    "in the platform block, then retry.")
         parts = (event.get_command_args() or "").strip().split()
         if not parts or parts[0].lower() not in ("list", "allow", "deny"):
             return _ACCESS_USAGE

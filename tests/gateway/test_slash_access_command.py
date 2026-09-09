@@ -66,14 +66,30 @@ class _FakeWhatsAppAdapter(_FakeAdapter, WhatsAppBehaviorMixin):
         self._bot_ids = {"6287784454555@c.us"}
 
 
+class _PlatformConfig:
+    def __init__(self, extra: dict):
+        self.extra = extra
+
+
+class _GatewayConfig:
+    def __init__(self, extras: dict):
+        self.platforms = {p: _PlatformConfig(e) for p, e in extras.items()}
+
+
 class _Runner(GatewayAccessCommandsMixin):
-    def __init__(self, adapters: dict):
+    def __init__(self, adapters: dict, admins: bool = True):
         from gateway.config import Platform
         # GatewayRunner keys self.adapters by Platform; accept the enum or its value string.
         self.adapters = {
             (k if isinstance(k, Platform) else Platform(k)): v
             for k, v in adapters.items()
         }
+        # Fail-closed needs an admin list, like production; opt out per-test.
+        admin_extra = {"allow_admin_from": ["6285157813352@s.whatsapp.net"],
+                       "group_allow_admin_from": ["6285157813352@s.whatsapp.net"]}
+        self.config = _GatewayConfig(
+            {p: dict(admin_extra) if admins else {} for p in self.adapters}
+        )
 
 
 @pytest.fixture
@@ -455,3 +471,25 @@ def test_pushname_learned_lookup_roundtrip():
     holder.remember_pushname("6289000000001@s.whatsapp.net", "Budi")
     assert holder._access_pushname_lookup("budi") == "6289000000001@s.whatsapp.net"
     assert holder._access_pushname_lookup("unknown") is None
+
+
+@pytest.mark.asyncio
+async def test_access_refuses_without_admin_list(homes):
+    # Fail closed: no admin list means anyone could reach the handler, so the
+    # handler itself must refuse — for edits AND for list (membership leaks).
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter}, admins=False)
+    reply = await runner._handle_access_command(_Event("allow user 089682642242"))
+    assert "no admin list" in reply
+    assert adapter._allow_from == set()
+    assert "6289682642242@s.whatsapp.net" not in _config_yaml(homes)["platforms"]["waha"]["allow_from"]
+    assert "no admin list" in await runner._handle_access_command(_Event("list"))
+
+
+@pytest.mark.asyncio
+async def test_access_works_with_admin_list(homes):
+    # The default test runner carries admin lists, like a configured gateway.
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow user 089682642242"))
+    assert "✅" in reply
