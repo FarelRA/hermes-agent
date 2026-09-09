@@ -347,7 +347,9 @@ class WahaAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return AccessResolution(canonical=gid, label=subj)
         if len(substring) > 1:
             return AccessResolution(candidates=tuple(substring[:8]))
-        return AccessResolution(canonical=text)
+        # Unknown to the roster: empty, not raw text. A stored name would
+        # never match the gate (which compares @g.us ids), so refuse honestly.
+        return AccessResolution()
 
     async def _resolve_access_user(self, text: str, event) -> "AccessResolution":
         from gateway.slash_commands_access import AccessResolution

@@ -822,7 +822,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return AccessResolution(canonical=substring[0][0], label=substring[0][1])
         if substring:
             return AccessResolution(candidates=tuple(substring[:8]))
-        return AccessResolution(canonical=text)
+        # Unknown to the bridge roster: empty, not raw text (a stored name
+        # would never match the gate, which compares group JIDs).
+        return AccessResolution()
 
     async def _access_resolve_user(self, text: str, event) -> "AccessResolution":
         from gateway.slash_commands_access import AccessResolution

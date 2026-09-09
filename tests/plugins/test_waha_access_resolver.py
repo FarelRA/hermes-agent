@@ -81,6 +81,15 @@ async def test_group_jid_passes_through():
 
 
 @pytest.mark.asyncio
+async def test_group_unknown_name_is_an_empty_resolution():
+    # A name the roster does not know must not come back as a storable id —
+    # the command replies "could not resolve" instead of storing dead text.
+    res = await _adapter().resolve_access_ref("Grup XYZ Tanpa Nama", scope="group")
+    assert res.canonical == ""
+    assert not res.candidates
+
+
+@pytest.mark.asyncio
 async def test_user_by_pushname_resolves_to_phone_jid():
     res = await _adapter().resolve_access_ref("@Niken", scope="user")
     assert res.canonical == "6289682642242@s.whatsapp.net"
