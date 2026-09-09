@@ -417,3 +417,16 @@ async def test_access_merges_twin_config_blocks(homes):
     assert "6289682642242@s.whatsapp.net" in fresh["waha"]["allow_from"]
     assert "6281111111111@s.whatsapp.net" in fresh["waha"]["allow_from"]
     assert "allow_from" not in fresh["platforms"]["waha"]
+
+
+@pytest.mark.asyncio
+async def test_access_list_shows_source_and_truncates(homes):
+    adapter = _FakeWhatsAppAdapter({
+        "allow_from": [f"62810000000{i:02d}@s.whatsapp.net" for i in range(35)],
+    })
+    adapter._dm_allowlist_source = "config"
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("list"))
+    assert "(source: config)" in reply
+    assert "…and 5 more" in reply
+    assert "6281000000034@s.whatsapp.net" not in reply

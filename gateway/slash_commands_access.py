@@ -413,10 +413,22 @@ class GatewayAccessCommandsMixin:
         lines = [f"Access lists for *{source.platform.value}* (this profile):"]
         dm_policy = extra.get("dm_policy") or getattr(adapter, "_dm_policy", "?")
         group_policy = extra.get("group_policy") or getattr(adapter, "_group_policy", "?")
+        dm_source = getattr(adapter, "_dm_allowlist_source", None) or "config"
         users = self._access_current_ids(adapter, "user")
         groups = self._access_current_ids(adapter, "group")
-        lines.append(f"DM policy: *{dm_policy}* — {len(users)} allowed")
-        lines.append("\n".join(f"• {item}" for item in users) if users else "• (none)")
+        lines.append(f"DM policy: *{dm_policy}* (source: {dm_source}) — {len(users)} allowed")
+        lines.append(self._access_render_ids(users))
         lines.append(f"Group policy: *{group_policy}* — {len(groups)} allowed")
-        lines.append("\n".join(f"• {item}" for item in groups) if groups else "• (none)")
+        lines.append(self._access_render_ids(groups))
         return "\n".join(lines)
+
+    @staticmethod
+    def _access_render_ids(items: list, limit: int = 30) -> str:
+        # No id→name API exists, so entries render as raw ids; long lists are
+        # cut with a remainder note instead of flooding the chat.
+        if not items:
+            return "• (none)"
+        shown = "\n".join(f"• {item}" for item in items[:limit])
+        if len(items) > limit:
+            shown += f"\n• …and {len(items) - limit} more"
+        return shown
