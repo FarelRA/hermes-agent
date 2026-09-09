@@ -446,3 +446,12 @@ async def test_access_writes_audit_trail(homes):
     assert entry["canonical"] == "6289682642242@s.whatsapp.net"
     assert entry["scope"] == "user"
     assert entry["actor"] == "6285157813352@s.whatsapp.net"
+
+
+def test_pushname_learned_lookup_roundtrip():
+    # Transports without roster names (Baileys bridge, NOWEB) resolve @Name
+    # through pushnames learned from inbound traffic — pin that fallback.
+    holder = _FakeWhatsAppAdapter({})
+    holder.remember_pushname("6289000000001@s.whatsapp.net", "Budi")
+    assert holder._access_pushname_lookup("budi") == "6289000000001@s.whatsapp.net"
+    assert holder._access_pushname_lookup("unknown") is None
