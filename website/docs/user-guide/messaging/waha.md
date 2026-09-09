@@ -77,7 +77,14 @@ config edit or restart:
 
 Ambiguous names reply with the matching candidates instead of guessing. Changes take
 effect immediately (the running adapter's lists are updated in place) and are persisted
-to `config.yaml`.
+to `config.yaml` — writes go to the top-level block the loader reads, so twin
+`platforms.*` entries are folded in rather than left to diverge. Every change is
+appended to `access_audit.jsonl` beside the profile config.
+
+Two honest refusals instead of silent dead entries: an unresolvable name/number gets
+`Could not resolve …` (nothing is stored — paste the full id), and edits while the
+policy is not `allowlist` get `Stored nothing …` (the list is not consulted, so the
+edit would change nothing).
 
 ## Step 2: Register the WAHA webhook
 
