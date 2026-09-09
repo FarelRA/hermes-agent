@@ -324,3 +324,43 @@ async def test_telegram_substring_candidate_order():
     single = await _Tg().resolve_access_ref("xi-c", scope="group")
     assert single.canonical == "-100123", single
     assert single.label == "kelas xi-c", single
+
+
+@pytest.mark.asyncio
+async def test_access_refuses_dead_user_ref(homes):
+    # Bare display names must not land in the allowlist as dead entries.
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow user Farel"))
+    assert "Could not resolve" in reply
+    assert adapter._allow_from == set()
+
+
+@pytest.mark.asyncio
+async def test_access_refuses_dead_group_ref(homes):
+    # Unresolvable group names must not land in the allowlist either.
+    adapter = _FakeWhatsAppAdapter({"group_allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow group Kelas XI-C"))
+    assert "Could not resolve" in reply
+    assert adapter._group_allow_from == set()
+
+
+@pytest.mark.asyncio
+async def test_access_warns_when_policy_not_allowlist(homes):
+    # Editing a list the policy never consults must say so, not claim success.
+    adapter = _FakeWhatsAppAdapter({"dm_policy": "open", "allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow user 089682642242"))
+    assert "Stored nothing" in reply
+    assert adapter._allow_from == set()
+
+
+@pytest.mark.asyncio
+async def test_access_allows_good_phone(homes):
+    # Guard against over-blocking: a real local number still works.
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter})
+    reply = await runner._handle_access_command(_Event("allow user 089682642242"))
+    assert "✅" in reply
+    assert "6289682642242@s.whatsapp.net" in adapter._allow_from

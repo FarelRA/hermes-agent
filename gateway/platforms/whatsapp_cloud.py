@@ -249,7 +249,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not text:
             return None
         if scope == "group":
-            return None
+            # Meta group support is not implemented — this adapter drops
+            # group-shaped payloads, so any stored group id would be dead.
+            # Empty (not None) skips the generic raw passthrough honestly.
+            return AccessResolution()
         if text.startswith("@"):
             learned = self._access_pushname_lookup(text[1:])
             return AccessResolution(canonical=learned, label=text[1:]) if learned else AccessResolution()

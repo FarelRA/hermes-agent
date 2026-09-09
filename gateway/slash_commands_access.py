@@ -89,6 +89,12 @@ class GatewayAccessCommandsMixin:
         scope = self._access_scope(parts[1])
         if scope is None:
             return _ACCESS_USAGE
+        kind = "DM" if scope == "user" else "group"
+        policy = self._access_effective_policy(adapter, scope)
+        if policy in ("open", "pairing", "disabled"):
+            return (f"Stored nothing: the {kind} policy here is *{policy}* — the allowlist "
+                    f"is not consulted, so allow/deny changes nothing. "
+                    f"Switch the {kind} policy to allowlist for /access to take effect.")
         ref = " ".join(parts[2:]).strip().strip('"').strip("'")
         if not ref:
             return _ACCESS_USAGE
@@ -104,11 +110,18 @@ class GatewayAccessCommandsMixin:
         canonical = resolution.canonical
         if not canonical:
             return f"Could not resolve {ref!r} on {source.platform.value}."
+        if not self._access_would_match(adapter, scope, canonical):
+            hint = ("Give a phone number (any local format), tap-mention the person, "
+                    "or paste the platform id."
+                    if scope == "user" else
+                    "Paste the full group id (…@g.us) — names only work when the "
+                    "group lookup finds them.")
+            return (f"Could not resolve {ref!r} to a usable id on {source.platform.value}. "
+                    f"{hint}")
 
         added = self._access_apply(adapter, source, scope, canonical, op)
         label = resolution.label or canonical
         verb = "added to" if op == "allow" else "removed from"
-        kind = "DM" if scope == "user" else "group"
         state = "now allowed" if op == "allow" else "no longer allowed"
         if added:
             return f"✅ {label} ({canonical}) {verb} the {kind} allowlist — {state}."
@@ -126,6 +139,37 @@ class GatewayAccessCommandsMixin:
         if lowered in ("group", "grup", "chat"):
             return "group"
         return None
+
+    @staticmethod
+    def _access_effective_policy(adapter, scope: str) -> str:
+        """The allowlist policy actually enforced for *scope*, or "" when unknown.
+
+        Mirrors the precedence `_access_render_list` shows: config.extra first,
+        then the adapter's live attribute. Unknown means "old behavior" — the
+        caller only blocks on policies known to ignore the allowlist.
+        """
+        extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+        if scope == "user":
+            value = extra.get("dm_policy") or getattr(adapter, "_dm_policy", None)
+        else:
+            value = extra.get("group_policy") or getattr(adapter, "_group_policy", None)
+        return str(value or "").strip().lower()
+
+    def _access_would_match(self, adapter, scope: str, canonical: str) -> bool:
+        """Would *canonical* ever match this adapter's gate? Guards dead entries.
+
+        Scoped to WhatsApp-family adapters, whose gate shapes are fully known
+        (bare digits fold to the same form the gate compares, group chats are
+        ``@g.us``). Other platforms keep the old behavior — their resolvers own
+        honesty there, and refusing unknown shapes could block legit ids.
+        """
+        if canonical == "*":
+            return True
+        if not self._access_is_whatsapp_family(adapter):
+            return True
+        if "@" in canonical:
+            return bool(canonical.split("@", 1)[0])
+        return canonical.isdigit() and len(canonical) >= 7
 
     # ------------------------------------------------------------------ resolution
 
