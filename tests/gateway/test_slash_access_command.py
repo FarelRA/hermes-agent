@@ -364,3 +364,37 @@ async def test_access_allows_good_phone(homes):
     reply = await runner._handle_access_command(_Event("allow user 089682642242"))
     assert "✅" in reply
     assert "6289682642242@s.whatsapp.net" in adapter._allow_from
+
+
+def test_concurrent_access_edits_keep_both_entries(homes, monkeypatch):
+    # Two edits racing through the whole read-compute-write must merge,
+    # not clobber. The slowed file read widens the race window so an
+    # unlocked implementation deterministically loses one entry.
+    import asyncio
+    import threading
+
+    import hermes_cli.config as cli_config
+
+    real_read = cli_config.read_user_config_raw
+
+    def slow_read(path):
+        import time
+        time.sleep(0.3)
+        return real_read(path)
+
+    monkeypatch.setattr(cli_config, "read_user_config_raw", slow_read)
+    adapter = _FakeWhatsAppAdapter({"allow_from": []})
+    runner = _Runner({"waha": adapter})
+
+    def allow(number):
+        asyncio.run(runner._handle_access_command(_Event(f"allow user {number}")))
+
+    first, second = threading.Thread(target=allow, args=("089682642242",)), \
+        threading.Thread(target=allow, args=("089682642243",))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+    block = _config_yaml(homes)["platforms"]["waha"]
+    assert "6289682642242@s.whatsapp.net" in block["allow_from"]
+    assert "6289682642243@s.whatsapp.net" in block["allow_from"]

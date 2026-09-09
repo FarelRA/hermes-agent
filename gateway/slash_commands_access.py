@@ -27,6 +27,7 @@ operators must set one for ``/access`` to be owner-only.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -268,21 +269,41 @@ class GatewayAccessCommandsMixin:
         return [str(item) for item in value] if isinstance(value, (list, tuple, set)) else []
 
     def _access_apply(self, adapter, source, scope: str, canonical: str, op: str) -> bool:
-        """Add/remove *canonical*, then persist.  Persist-first: a failed write leaves
-        memory untouched, so the reply never claims an effect that did not happen."""
-        current = self._access_current_ids(adapter, scope)
-        present = canonical in current or self._access_id_in_list(current, canonical)
-        if op == "allow":
-            if present:
-                return False
-            updated = current + [canonical]
-        else:
-            if not present:
-                return False
-            updated = [item for item in current if item != canonical and not self._access_id_in_list([item], canonical)]
-        self._access_persist(adapter, source, scope, updated)
-        self._access_mutate_live(adapter, scope, updated)
-        return True
+        """Add/remove *canonical*, then persist.
+
+        The whole read-compute-write runs under one cross-process lock, and
+        the working set is the union of the live set and the file list — so
+        two concurrent edits (threads or processes) merge instead of one
+        silently clobbering the other. Persist-first: a failed write leaves
+        memory untouched, so the reply never claims an effect that did not
+        happen.
+        """
+        from gateway.run import _gateway_config_home
+        from hermes_cli.config import atomic_config_write, read_user_config_raw
+
+        key = "allow_from" if scope == "user" else "group_allow_from"
+        config_path = _gateway_config_home() / "config.yaml"
+        with self._access_config_lock(config_path):
+            raw = read_user_config_raw(config_path)
+            block = self._access_platform_block(raw, source.platform.value)
+            filed = block.get(key)
+            filed = [str(item) for item in filed] if isinstance(filed, (list, tuple, set)) else []
+            live = self._access_current_ids(adapter, scope)
+            current = live + [item for item in filed if item not in live]
+            present = canonical in current or self._access_id_in_list(current, canonical)
+            if op == "allow":
+                if present:
+                    return False
+                updated = current + [canonical]
+            else:
+                if not present:
+                    return False
+                updated = [item for item in current
+                           if item != canonical and not self._access_id_in_list([item], canonical)]
+            block[key] = sorted(updated)
+            atomic_config_write(config_path, raw)
+            self._access_mutate_live(adapter, scope, updated)
+            return True
 
     @staticmethod
     def _access_id_in_list(items, canonical: str) -> bool:
@@ -292,16 +313,26 @@ class GatewayAccessCommandsMixin:
         target = normalize_whatsapp_identifier(canonical)
         return any(normalize_whatsapp_identifier(item) == target for item in items)
 
-    def _access_persist(self, adapter, source, scope: str, updated: list) -> None:
-        from gateway.run import _gateway_config_home
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
+    @staticmethod
+    @contextlib.contextmanager
+    def _access_config_lock(config_path):
+        """Best-effort cross-process mutex for the /access read-modify-write.
 
-        config_path = _gateway_config_home() / "config.yaml"
-        raw = read_user_config_raw(config_path)
-        platform_name = source.platform.value
-        block = self._access_platform_block(raw, platform_name)
-        block["allow_from" if scope == "user" else "group_allow_from"] = sorted(updated)
-        atomic_config_write(config_path, raw)
+        Without it two concurrent edits interleave (both read, both write) and
+        one entry is silently lost. POSIX uses flock; elsewhere the atomic
+        write inside is the only guard.
+        """
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        with open(config_path.with_name(config_path.name + ".lock"), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _access_platform_block(raw: dict, platform_name: str) -> dict:
