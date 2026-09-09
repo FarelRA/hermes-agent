@@ -64,9 +64,9 @@ class PlatformAccessResolversMixin:
             exact = cache.get(needle)
             if exact:
                 return AccessResolution(canonical=exact, label=text)
-            substring = [(name, cid) for name, cid in cache.items() if needle in name]
+            substring = [(cid, name) for name, cid in cache.items() if needle in name]
             if len(substring) == 1:
-                return AccessResolution(canonical=substring[0][1], label=substring[0][0])
+                return AccessResolution(canonical=substring[0][0], label=substring[0][1])
             if substring:
                 return AccessResolution(candidates=tuple(substring[:8]))
             return None

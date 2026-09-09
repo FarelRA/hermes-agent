@@ -304,3 +304,23 @@ async def test_raw_name_entry_never_matches_gate():
     # matches phone/JID/LID identity forms.
     assert WhatsAppBehaviorMixin._matches_whatsapp_allowlist(
         "62812xxxx@s.whatsapp.net", ["Farel"]) is False
+
+
+@pytest.mark.asyncio
+async def test_telegram_substring_candidate_order():
+    # Core renders candidates as (id, label); every resolver must return
+    # that order so the copy-pasted id is usable.
+    from gateway.slash_commands_resolve_platforms import PlatformAccessResolversMixin
+
+    class _Tg(PlatformAccessResolversMixin):
+        name = "telegram"
+        _bot = None
+        _seen_chats = {"kelas xi-c": "-100123", "kelas xi-d": "-100124"}
+
+    res = await _Tg().resolve_access_ref("kelas", scope="group")
+    assert res.candidates, res
+    for cid, _label in res.candidates:
+        assert cid.lstrip("-").isdigit(), res.candidates
+    single = await _Tg().resolve_access_ref("xi-c", scope="group")
+    assert single.canonical == "-100123", single
+    assert single.label == "kelas xi-c", single
