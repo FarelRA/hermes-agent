@@ -295,3 +295,12 @@ async def test_waha_style_resolver_resolves_group_by_name(homes):
     reply = await runner._handle_access_command(_Event('allow group "kami akan berubah mas mba"'))
     assert "120363426491664891@g.us" in adapter._group_allow_from
     assert "✅" in reply
+
+
+@pytest.mark.asyncio
+async def test_raw_name_entry_never_matches_gate():
+    # Invariant (documents the dead-entry gap): a raw-text allowlist entry such
+    # as a display name must never match the WhatsApp DM gate, which only
+    # matches phone/JID/LID identity forms.
+    assert WhatsAppBehaviorMixin._matches_whatsapp_allowlist(
+        "62812xxxx@s.whatsapp.net", ["Farel"]) is False
